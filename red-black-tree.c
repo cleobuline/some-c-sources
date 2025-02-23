@@ -343,7 +343,7 @@ int main() {
     deleteNode(&tree, 30);
     printTree(tree.root, 0);
 
-    printf("\nListing décroissant des éléments de l'arbre:\n");
+    printf("\nListing croissant des éléments de l'arbre:\n");
     reverseInOrder(tree.root);
     printf("\n");
 
