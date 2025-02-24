@@ -19,47 +19,47 @@ typedef enum {
 
 typedef struct {
     OpCode opcode;
-    int operand;
+    long int operand;
 } Instruction;
 
 typedef struct {
     char *name;
     Instruction code[WORD_CODE_SIZE];
-    int code_length;
+    long int code_length;
     char *strings[WORD_CODE_SIZE];
-    int string_count;
+    long int string_count;
 } CompiledWord;
 
 typedef struct {
-    int data[STACK_SIZE];
-    int top;
+    long int data[STACK_SIZE];
+    long int top;
 } Stack;
 
 typedef enum { CT_IF, CT_BEGIN, CT_DO, CT_CASE, CT_OF, CT_ENDOF } ControlType;
 typedef struct {
     ControlType type;
-    int addr;
+    long int addr;
 } ControlEntry;
 
 ControlEntry control_stack[CONTROL_STACK_SIZE];
 int control_stack_top = 0;
 
 typedef struct {
-    int index;
-    int limit;
-    int addr;
+    long int index;
+    long int limit;
+    long int addr;
 } LoopControl;
 
 LoopControl loop_stack[LOOP_STACK_SIZE];
-int loop_stack_top = -1;
+long int  loop_stack_top = -1;
 
 CompiledWord dictionary[DICT_SIZE];
-int dict_count = 0;
-int current_word_index = -1; // Index du mot en cours de définition
+long int  dict_count = 0;
+long int  current_word_index = -1; // Index du mot en cours de définition
 
 void interpret(char *input, Stack *stack);
 
-void push(Stack *stack, int value) {
+void push(Stack *stack, long int value) {
     if (stack->top < STACK_SIZE - 1) {
         stack->data[++stack->top] = value;
     } else {
@@ -67,7 +67,7 @@ void push(Stack *stack, int value) {
     }
 }
 
-int pop(Stack *stack) {
+long int  pop(Stack *stack) {
     if (stack->top >= 0) {
         return stack->data[stack->top--];
     } else {
@@ -76,37 +76,37 @@ int pop(Stack *stack) {
     }
 }
 
-void executeInstruction(Instruction instr, Stack *stack, int *ip, CompiledWord *word);
+void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledWord *word);
 
 void executeCompiledWord(CompiledWord *word, Stack *stack) {
-    int ip = 0;
+    long int ip = 0;
     while (ip < word->code_length) {
         executeInstruction(word->code[ip], stack, &ip, word);
         ip++;
     }
 }
 
-void executeInstruction(Instruction instr, Stack *stack, int *ip, CompiledWord *word) {
+void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledWord *word) {
     switch (instr.opcode) {
         case OP_PUSH: push(stack, instr.operand); break;
-        case OP_ADD: { int a = pop(stack); int b = pop(stack); push(stack, b + a); break; }
-        case OP_SUB: { int a = pop(stack); int b = pop(stack); push(stack, b - a); break; }
-        case OP_MUL: { int a = pop(stack); int b = pop(stack); push(stack, b * a); break; }
+        case OP_ADD: { long int a = pop(stack); long int b = pop(stack); push(stack, b + a); break; }
+        case OP_SUB: { long int a = pop(stack); long int b = pop(stack); push(stack, b - a); break; }
+        case OP_MUL: { long int a = pop(stack); long int b = pop(stack); push(stack, b * a); break; }
         case OP_DIV: { 
-            int a = pop(stack); 
-            int b = pop(stack); 
+            long int a = pop(stack); 
+            long int b = pop(stack); 
             if (a != 0) push(stack, b / a);
             else printf("Division by zero!\n"); 
             break; 
         }
-        case OP_DUP: { int a = pop(stack); push(stack, a); push(stack, a); break; }
-        case OP_SWAP: { int a = pop(stack); int b = pop(stack); push(stack, a); push(stack, b); break; }
-        case OP_OVER: { int a = pop(stack); int b = pop(stack); push(stack, b); push(stack, a); push(stack, b); break; }
+        case OP_DUP: { long int a = pop(stack); push(stack, a); push(stack, a); break; }
+        case OP_SWAP: { long int a = pop(stack); long int b = pop(stack); push(stack, a); push(stack, b); break; }
+        case OP_OVER: { long int a = pop(stack); long int b = pop(stack); push(stack, b); push(stack, a); push(stack, b); break; }
         case OP_ROT: {
             if (stack->top >= 2) {
-                int a = stack->data[stack->top - 2];
-                int b = stack->data[stack->top - 1];
-                int c = stack->data[stack->top];
+                long int a = stack->data[stack->top - 2];
+                long int b = stack->data[stack->top - 1];
+                long int c = stack->data[stack->top];
                 stack->data[stack->top - 2] = b;
                 stack->data[stack->top - 1] = c;
                 stack->data[stack->top] = a;
@@ -117,7 +117,7 @@ void executeInstruction(Instruction instr, Stack *stack, int *ip, CompiledWord *
         }
         case OP_DOT: {
             if (stack->top >= 0) {
-                printf("%d\n", pop(stack));
+                printf("%ld\n", pop(stack));
             } else {
                 printf("Stack underflow!\n");
             }
@@ -128,20 +128,20 @@ void executeInstruction(Instruction instr, Stack *stack, int *ip, CompiledWord *
             break;
         }
         case OP_DROP: pop(stack); break;
-        case OP_EQ: { int a = pop(stack); int b = pop(stack); push(stack, (b == a) ? 1 : 0); break; }
-        case OP_LT: { int a = pop(stack); int b = pop(stack); push(stack, (b < a) ? 1 : 0); break; }
-        case OP_GT: { int a = pop(stack); int b = pop(stack); push(stack, (b > a) ? 1 : 0); break; }
-        case OP_AND: { int a = pop(stack); int b = pop(stack); push(stack, (b && a) ? 1 : 0); break; }
-        case OP_OR: { int a = pop(stack); int b = pop(stack); push(stack, (b || a) ? 1 : 0); break; }
-        case OP_NOT: { int a = pop(stack); push(stack, (a == 0) ? 1 : 0); break; }
+        case OP_EQ: { long int a = pop(stack); long int b = pop(stack); push(stack, (b == a) ? 1 : 0); break; }
+        case OP_LT: { long int a = pop(stack); long int b = pop(stack); push(stack, (b < a) ? 1 : 0); break; }
+        case OP_GT: { long int a = pop(stack); long int b = pop(stack); push(stack, (b > a) ? 1 : 0); break; }
+        case OP_AND: { long int a = pop(stack); long int b = pop(stack); push(stack, (b && a) ? 1 : 0); break; }
+        case OP_OR: { long int a = pop(stack); long int b = pop(stack); push(stack, (b || a) ? 1 : 0); break; }
+        case OP_NOT: { long int a = pop(stack); push(stack, (a == 0) ? 1 : 0); break; }
         case OP_I: {
             if (loop_stack_top >= 0) push(stack, loop_stack[loop_stack_top].index);
             else printf("I used outside of a loop!\n");
             break;
         }
         case OP_DO: {
-            int limit = pop(stack);
-            int index = pop(stack);
+            long int limit = pop(stack);
+            long int index = pop(stack);
             if (loop_stack_top < LOOP_STACK_SIZE - 1) {
                 loop_stack[++loop_stack_top].index = index;
                 loop_stack[loop_stack_top].limit = limit;
@@ -176,7 +176,7 @@ void executeInstruction(Instruction instr, Stack *stack, int *ip, CompiledWord *
             } else if (instr.operand >= 0 && instr.operand < dict_count) {
                 executeCompiledWord(&dictionary[instr.operand], stack);
             } else {
-                printf("Invalid CALL index: %d\n", instr.operand);
+                printf("Invalid CALL index: %ld\n", instr.operand);
             }
             break;
         }
@@ -184,20 +184,20 @@ void executeInstruction(Instruction instr, Stack *stack, int *ip, CompiledWord *
         case OP_DOT_QUOTE: {
             if (instr.operand >= 0 && instr.operand < word->string_count) {
                 printf("%s", word->strings[instr.operand]);
-            } else printf("Invalid string index for .\": %d\n", instr.operand);
+            } else printf("Invalid string index for .\": %ld\n", instr.operand);
             break;
         }
         case OP_CR: printf("\n"); break;
         case OP_DOT_S: {
             printf("Stack: ");
-            for (int i = 0; i <= stack->top; i++) printf("%d ", stack->data[i]);
+            for (int i = 0; i <= stack->top; i++) printf("%ld ", stack->data[i]);
             printf("\n");
             break;
         }
         case OP_CASE: break;
         case OP_OF: {
-            int comparison_value = pop(stack);
-            int test_value = pop(stack);
+            long int comparison_value = pop(stack);
+            long int test_value = pop(stack);
             if (comparison_value != test_value) {
                 push(stack, test_value);
                 *ip = instr.operand - 1;
@@ -209,7 +209,7 @@ void executeInstruction(Instruction instr, Stack *stack, int *ip, CompiledWord *
     }
 }
 
-void addCompiledWord(char *name, Instruction *code, int code_length, char **strings, int string_count) {
+void addCompiledWord(char *name, Instruction *code, long int code_length, char **strings, long int string_count) {
     if (dict_count < DICT_SIZE) {
         dictionary[dict_count].name = strdup(name);
         memcpy(dictionary[dict_count].code, code, code_length * sizeof(Instruction));
@@ -268,7 +268,7 @@ void compileToken(char *token, char **input_rest) {
             printf("Missing closing quote for LOAD\n");
             return;
         }
-        int len = end - start;
+        long int len = end - start;
         char *filename = malloc(len + 1);
         strncpy(filename, start, len);
         filename[len] = '\0';
@@ -286,7 +286,7 @@ void compileToken(char *token, char **input_rest) {
             printf("Missing closing quote for .\"\n");
             return;
         }
-        int len = end - start;
+        long int len = end - start;
         char *str = malloc(len + 1);
         strncpy(str, start, len);
         str[len] = '\0';
@@ -333,12 +333,12 @@ void compileToken(char *token, char **input_rest) {
     }
     else {
         char *endptr;
-        int value = strtol(token, &endptr, 10);
+        long int value = strtol(token, &endptr, 10);
         if (*endptr == '\0') {
             instr.opcode = OP_PUSH;
             instr.operand = value;
         } else {
-            int index = findCompiledWordIndex(token);
+            long int index = findCompiledWordIndex(token);
             if (index >= 0) {
                 instr.opcode = OP_CALL;
                 instr.operand = index;
@@ -421,7 +421,7 @@ void interpret(char *input, Stack *stack) {
                     printf("Missing closing quote for LOAD\n");
                     return;
                 }
-                int len = end - start;
+                long int len = end - start;
                 char filename[MAX_STRING_SIZE];
                 strncpy(filename, start, len);
                 filename[len] = '\0';
@@ -464,7 +464,7 @@ void interpret(char *input, Stack *stack) {
                     printf("Missing closing quote for .\"\n");
                     return;
                 }
-                int len = end - start;
+                long int len = end - start;
                 char *str = malloc(len + 1);
                 strncpy(str, start, len);
                 str[len] = '\0';
@@ -478,7 +478,7 @@ void interpret(char *input, Stack *stack) {
             else {
                 CompiledWord temp = {.code_length = 1};
                 char *endptr;
-                int value = strtol(token, &endptr, 10);
+                long int value = strtol(token, &endptr, 10);
                 if (*endptr == '\0') temp.code[0] = (Instruction){OP_PUSH, value};
                 else if (strcmp(token, "+") == 0) temp.code[0] = (Instruction){OP_ADD, 0};
                 else if (strcmp(token, "-") == 0) temp.code[0] = (Instruction){OP_SUB, 0};
@@ -501,7 +501,7 @@ void interpret(char *input, Stack *stack) {
                 else if (strcmp(token, ".") == 0) temp.code[0] = (Instruction){OP_DOT, 0};
                 else if (strcmp(token, "FLUSH") == 0) temp.code[0] = (Instruction){OP_FLUSH, 0};
                 else {
-                    int index = findCompiledWordIndex(token);
+                    long int index = findCompiledWordIndex(token);
                     if (index >= 0) temp.code[0] = (Instruction){OP_CALL, index};
                     else {
                         printf("Unknown word: %s\n", token);
@@ -518,14 +518,14 @@ void interpret(char *input, Stack *stack) {
 
 void printStack(Stack *stack) {
     printf("Stack: ");
-    for (int i = 0; i <= stack->top; i++) printf("%d ", stack->data[i]);
+    for (int i = 0; i <= stack->top; i++) printf("%ld ", stack->data[i]);
     printf("\n");
 }
 
 int main() {
     Stack stack = {.top = -1};
     char input[256];
-    int suppress_stack_print = 0;
+    long int suppress_stack_print = 0;
     printf("Forth-like interpreter\n");
     while (1) {
         printf("> ");
