@@ -14,7 +14,7 @@ typedef enum {
     OP_PUSH, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_DUP, OP_SWAP, OP_OVER,
     OP_ROT, OP_DROP, OP_EQ, OP_LT, OP_GT, OP_AND, OP_OR, OP_NOT, OP_I,
     OP_DO, OP_LOOP, OP_BRANCH_FALSE, OP_BRANCH, OP_CALL, OP_END, OP_DOT_QUOTE,
-    OP_CR, OP_DOT_S, OP_CASE, OP_OF, OP_ENDOF, OP_ENDCASE
+    OP_CR, OP_DOT_S, OP_FLUSH, OP_CASE, OP_OF, OP_ENDOF, OP_DOT, OP_ENDCASE
 } OpCode;
 
 typedef struct {
@@ -55,7 +55,10 @@ int loop_stack_top = -1;
 
 CompiledWord dictionary[DICT_SIZE];
 int dict_count = 0;
+int current_word_index = -1; // Index du mot en cours de définition
+
 void interpret(char *input, Stack *stack);
+
 void push(Stack *stack, int value) {
     if (stack->top < STACK_SIZE - 1) {
         stack->data[++stack->top] = value;
@@ -110,6 +113,18 @@ void executeInstruction(Instruction instr, Stack *stack, int *ip, CompiledWord *
             } else {
                 printf("Stack underflow for ROT!\n");
             }
+            break;
+        }
+        case OP_DOT: {
+            if (stack->top >= 0) {
+                printf("%d\n", pop(stack));
+            } else {
+                printf("Stack underflow!\n");
+            }
+            break;
+        }
+        case OP_FLUSH: {
+            stack->top = -1;
             break;
         }
         case OP_DROP: pop(stack); break;
@@ -204,7 +219,10 @@ void addCompiledWord(char *name, Instruction *code, int code_length, char **stri
             dictionary[dict_count].strings[i] = strings[i] ? strdup(strings[i]) : NULL;
         }
         dict_count++;
-    } else printf("Dictionary full!\n");
+        current_word_index = dict_count - 1; // Mettre à jour l'index du mot actuel
+    } else {
+        printf("Dictionary full!\n");
+    }
 }
 
 int findCompiledWordIndex(char *name) {
@@ -235,6 +253,8 @@ void compileToken(char *token, char **input_rest) {
     else if (strcmp(token, "I") == 0) instr.opcode = OP_I;
     else if (strcmp(token, "CR") == 0) instr.opcode = OP_CR;
     else if (strcmp(token, ".S") == 0) instr.opcode = OP_DOT_S;
+    else if (strcmp(token, ".") == 0) instr.opcode = OP_DOT;
+    else if (strcmp(token, "FLUSH") == 0) instr.opcode = OP_FLUSH;
     else if (strcmp(token, "LOAD") == 0) {
         char *start = *input_rest;
         while (*start && (*start == ' ' || *start == '\t')) start++;
@@ -340,10 +360,18 @@ void interpret(char *input, Stack *stack) {
             if (strcmp(token, ";") == 0) {
                 Instruction end = {OP_END, 0};
                 currentWord.code[currentWord.code_length++] = end;
-                addCompiledWord(currentWord.name, currentWord.code, currentWord.code_length, 
-                              currentWord.strings, currentWord.string_count);
+                // Mettre à jour le mot dans le dictionnaire au lieu d’en ajouter un nouveau
+                if (current_word_index >= 0 && current_word_index < dict_count) {
+                    memcpy(dictionary[current_word_index].code, currentWord.code, currentWord.code_length * sizeof(Instruction));
+                    dictionary[current_word_index].code_length = currentWord.code_length;
+                    for (int i = 0; i < currentWord.string_count; i++) {
+                        dictionary[current_word_index].strings[i] = currentWord.strings[i];
+                    }
+                    dictionary[current_word_index].string_count = currentWord.string_count;
+                }
                 free(currentWord.name);
                 compiling = 0;
+                current_word_index = -1; // Réinitialiser après la définition
             } else if (strcmp(token, "IF") == 0) {
                 Instruction instr = {OP_BRANCH_FALSE, 0};
                 currentWord.code[currentWord.code_length++] = instr;
@@ -410,6 +438,13 @@ void interpret(char *input, Stack *stack) {
                 }
                 saveptr = end + 1;
             }
+            else if (strcmp(token, ".") == 0) {
+                Instruction instr = {OP_DOT, 0};
+                executeInstruction(instr, stack, NULL, NULL);
+            }
+            else if (strcmp(token, "FLUSH") == 0) {
+                stack->top = -1;
+            }
             else if (strcmp(token, ":") == 0) {
                 token = strtok_r(NULL, " \t\n", &saveptr);
                 if (token) {
@@ -417,6 +452,9 @@ void interpret(char *input, Stack *stack) {
                     currentWord.name = strdup(token);
                     currentWord.code_length = 0;
                     currentWord.string_count = 0;
+                    // Ajouter immédiatement au dictionnaire pour permettre la récursivité
+                    addCompiledWord(currentWord.name, currentWord.code, currentWord.code_length, 
+                                    currentWord.strings, currentWord.string_count);
                 }
             }
             else if (strcmp(token, ".\"") == 0) {
@@ -460,6 +498,8 @@ void interpret(char *input, Stack *stack) {
                 else if (strcmp(token, "I") == 0) temp.code[0] = (Instruction){OP_I, 0};
                 else if (strcmp(token, "CR") == 0) temp.code[0] = (Instruction){OP_CR, 0};
                 else if (strcmp(token, ".S") == 0) temp.code[0] = (Instruction){OP_DOT_S, 0};
+                else if (strcmp(token, ".") == 0) temp.code[0] = (Instruction){OP_DOT, 0};
+                else if (strcmp(token, "FLUSH") == 0) temp.code[0] = (Instruction){OP_FLUSH, 0};
                 else {
                     int index = findCompiledWordIndex(token);
                     if (index >= 0) temp.code[0] = (Instruction){OP_CALL, index};
@@ -496,7 +536,7 @@ int main() {
         if (strncmp(input, "LOAD ", 5) == 0) {
             suppress_stack_print = 1;
         }
-        // if (!compiling && !suppress_stack_print) printStack(&stack);
+        //if (!compiling && !suppress_stack_print) printStack(&stack);
     }
     return 0;
 }
