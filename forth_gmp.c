@@ -15,7 +15,8 @@ typedef enum {
     OP_PUSH, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_DUP, OP_SWAP, OP_OVER,
     OP_ROT, OP_DROP, OP_EQ, OP_LT, OP_GT, OP_AND, OP_OR, OP_NOT, OP_I,
     OP_DO, OP_LOOP, OP_BRANCH_FALSE, OP_BRANCH, OP_CALL, OP_END, OP_DOT_QUOTE,
-    OP_CR, OP_DOT_S, OP_FLUSH, OP_DOT, OP_CASE, OP_OF, OP_ENDOF, OP_ENDCASE
+    OP_CR, OP_DOT_S, OP_FLUSH, OP_DOT, OP_CASE, OP_OF, OP_ENDOF, OP_ENDCASE,
+    OP_EXIT
 } OpCode;
 
 typedef struct {
@@ -57,6 +58,8 @@ long int loop_stack_top = -1;
 
 CompiledWord dictionary[DICT_SIZE];
 long int dict_count = 0;
+
+void interpret(char *input, Stack *stack);
 
 void initStack(Stack *stack) {
     stack->top = -1;
@@ -222,15 +225,16 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
             else printf("I used outside of a loop!\n");
             break;
         case OP_DO:
-            pop(stack, a);
-            pop(stack, b);
+            pop(stack, b);  // Début (ex. 0)
+            pop(stack, a);  // Limite (ex. 10)
             if (loop_stack_top < LOOP_STACK_SIZE - 1) {
-                mpz_init(loop_stack[++loop_stack_top].index);
-                mpz_init(loop_stack[loop_stack_top].limit);
-                mpz_set(loop_stack[loop_stack_top].index, b);
-                mpz_set(loop_stack[loop_stack_top].limit, a);
+                loop_stack_top++;
+                mpz_init_set(loop_stack[loop_stack_top].index, b);
+                mpz_init_set(loop_stack[loop_stack_top].limit, a);
                 loop_stack[loop_stack_top].addr = *ip + 1;
-            } else printf("Loop stack overflow!\n");
+            } else {
+                printf("Loop stack overflow!\n");
+            }
             break;
         case OP_LOOP:
             if (loop_stack_top >= 0) {
@@ -242,7 +246,9 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                     mpz_clear(loop_stack[loop_stack_top].limit);
                     loop_stack_top--;
                 }
-            } else printf("LOOP without DO!\n");
+            } else {
+                printf("LOOP without DO!\n");
+            }
             break;
         case OP_BRANCH_FALSE:
             pop(stack, a);
@@ -282,20 +288,23 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
             for (int i = 0; i <= stack->top; i++) gmp_printf("%Zd ", stack->data[i]);
             printf("\n");
             break;
-        case OP_CASE: break;  // Marque le début de la structure, rien à faire à l'exécution
+        case OP_CASE: break;
         case OP_OF:
-            pop(stack, a);  // Valeur à tester
-            pop(stack, b);  // Valeur CASE
-            if (mpz_cmp(a, b) != 0) {  // Si pas égal, saute au prochain ENDOF
-                push(stack, b);  // Remet la valeur CASE sur la pile
+            pop(stack, a);
+            pop(stack, b);
+            if (mpz_cmp(a, b) != 0) {
+                push(stack, b);
                 *ip = instr.operand - 1;
             }
             break;
         case OP_ENDOF:
-            *ip = instr.operand - 1;  // Saute à ENDCASE
+            *ip = instr.operand - 1;
             break;
         case OP_ENDCASE:
-            pop(stack, a);  // Nettoie la valeur CASE de la pile
+            pop(stack, a);
+            break;
+        case OP_EXIT:
+            *ip = word->code_length - 1;
             break;
     }
     mpz_clear(a); mpz_clear(b); mpz_clear(result);
@@ -416,6 +425,9 @@ void compileToken(char *token, char **input_rest) {
             currentWord.code[currentWord.code_length++] = instr;
             control_stack_top--;
         }
+    } else if (strcmp(token, "EXIT") == 0) {
+        instr.opcode = OP_EXIT;
+        currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "LOAD") == 0) {
         char *start = *input_rest;
         while (*start && (*start == ' ' || *start == '\t')) start++;
@@ -481,7 +493,7 @@ void compileToken(char *token, char **input_rest) {
                 currentWord.code[control_stack[--control_stack_top].addr].operand = currentWord.code_length;
             }
             if (control_stack_top > 0 && control_stack[control_stack_top-1].type == CT_CASE) {
-                control_stack_top--;  // Enlever CT_CASE
+                control_stack_top--;
             }
         } else printf("ENDCASE without CASE!\n");
     } else {
@@ -676,6 +688,10 @@ void interpret(char *input, Stack *stack) {
             } else if (strcmp(token, "FLUSH") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_FLUSH, 0};
+                executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "EXIT") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_EXIT, 0};
                 executeCompiledWord(&temp, stack);
             } else {
                 long int index = findCompiledWordIndex(token);
