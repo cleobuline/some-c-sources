@@ -16,7 +16,8 @@ typedef enum {
     OP_ROT, OP_DROP, OP_EQ, OP_LT, OP_GT, OP_AND, OP_OR, OP_NOT, OP_I,
     OP_DO, OP_LOOP, OP_BRANCH_FALSE, OP_BRANCH, OP_CALL, OP_END, OP_DOT_QUOTE,
     OP_CR, OP_DOT_S, OP_FLUSH, OP_DOT, OP_CASE, OP_OF, OP_ENDOF, OP_ENDCASE,
-    OP_EXIT
+    OP_EXIT, OP_BEGIN, OP_WHILE, OP_REPEAT,
+    OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_BIT_NOT, OP_LSHIFT, OP_RSHIFT
 } OpCode;
 
 typedef struct {
@@ -225,8 +226,8 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
             else printf("I used outside of a loop!\n");
             break;
         case OP_DO:
-            pop(stack, b);  // Début (ex. 0)
-            pop(stack, a);  // Limite (ex. 10)
+            pop(stack, b);
+            pop(stack, a);
             if (loop_stack_top < LOOP_STACK_SIZE - 1) {
                 loop_stack_top++;
                 mpz_init_set(loop_stack[loop_stack_top].index, b);
@@ -305,6 +306,52 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
             break;
         case OP_EXIT:
             *ip = word->code_length - 1;
+            break;
+        case OP_BEGIN:
+            break;
+        case OP_WHILE:
+            pop(stack, a);
+            if (mpz_cmp_si(a, 0) == 0) {
+                *ip = instr.operand - 1;
+            }
+            break;
+        case OP_REPEAT:
+            *ip = instr.operand - 1;
+            break;
+        case OP_BIT_AND:
+            pop(stack, a);
+            pop(stack, b);
+            mpz_and(result, b, a);
+            push(stack, result);
+            break;
+        case OP_BIT_OR:
+            pop(stack, a);
+            pop(stack, b);
+            mpz_ior(result, b, a);
+            push(stack, result);
+            break;
+        case OP_BIT_XOR:
+            pop(stack, a);
+            pop(stack, b);
+            mpz_xor(result, b, a);
+            push(stack, result);
+            break;
+        case OP_BIT_NOT:
+            pop(stack, a);
+            mpz_com(result, a);
+            push(stack, result);
+            break;
+        case OP_LSHIFT:
+            pop(stack, a);
+            pop(stack, b);
+            mpz_mul_2exp(result, b, mpz_get_ui(a));
+            push(stack, result);
+            break;
+        case OP_RSHIFT:
+            pop(stack, a);
+            pop(stack, b);
+            mpz_tdiv_q_2exp(result, b, mpz_get_ui(a));
+            push(stack, result);
             break;
     }
     mpz_clear(a); mpz_clear(b); mpz_clear(result);
@@ -496,6 +543,39 @@ void compileToken(char *token, char **input_rest) {
                 control_stack_top--;
             }
         } else printf("ENDCASE without CASE!\n");
+    } else if (strcmp(token, "BEGIN") == 0) {
+        instr.opcode = OP_BEGIN;
+        currentWord.code[currentWord.code_length++] = instr;
+        control_stack[control_stack_top++] = (ControlEntry){CT_DO, currentWord.code_length - 1};
+    } else if (strcmp(token, "WHILE") == 0) {
+        instr.opcode = OP_WHILE;
+        instr.operand = 0;
+        currentWord.code[currentWord.code_length++] = instr;
+        control_stack[control_stack_top++] = (ControlEntry){CT_IF, currentWord.code_length - 1};
+    } else if (strcmp(token, "REPEAT") == 0) {
+        instr.opcode = OP_REPEAT;
+        instr.operand = control_stack[control_stack_top - 2].addr;
+        currentWord.code[currentWord.code_length++] = instr;
+        currentWord.code[control_stack[control_stack_top - 1].addr].operand = currentWord.code_length;
+        control_stack_top -= 2;
+    } else if (strcmp(token, "&") == 0) {
+        instr.opcode = OP_BIT_AND;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "|") == 0) {
+        instr.opcode = OP_BIT_OR;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "^") == 0) {
+        instr.opcode = OP_BIT_XOR;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "~") == 0) {
+        instr.opcode = OP_BIT_NOT;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "LSHIFT") == 0) {
+        instr.opcode = OP_LSHIFT;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "RSHIFT") == 0) {
+        instr.opcode = OP_RSHIFT;
+        currentWord.code[currentWord.code_length++] = instr;
     } else {
         long int index = findCompiledWordIndex(token);
         if (index >= 0) {
@@ -692,6 +772,30 @@ void interpret(char *input, Stack *stack) {
             } else if (strcmp(token, "EXIT") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_EXIT, 0};
+                executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "&") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_BIT_AND, 0};
+                executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "|") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_BIT_OR, 0};
+                executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "^") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_BIT_XOR, 0};
+                executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "~") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_BIT_NOT, 0};
+                executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "LSHIFT") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_LSHIFT, 0};
+                executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "RSHIFT") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_RSHIFT, 0};
                 executeCompiledWord(&temp, stack);
             } else {
                 long int index = findCompiledWordIndex(token);
