@@ -496,26 +496,28 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 set_error("STORE: Invalid variable index");
             }
             break;
-        case OP_PICK:
-            pop(stack, *a);
-            if (!error_flag) {
-                long int n = mpz_get_si(*a);
-                if (n >= 0 && n <= stack->top) {
-                    mpz_set(*result, stack->data[stack->top - n]);
-                    push(stack, *result);
-                } else {
-                    set_error("PICK: Stack underflow or invalid index");
-                    push(stack, *a);
-                }
-            }
-            break;
+		case OP_PICK:
+    		pop(stack, *a);
+    		if (!error_flag) {
+        	long int n = mpz_get_si(*a);
+        	if (n >= 0 && n <= stack->top + 1) {  // Inclut la profondeur totale
+            	int index = stack->top - n;
+            	if (index < 0) index = 0;  // Sécurité pour n = top + 1
+            	mpz_set(*result, stack->data[index]);
+            	push(stack, *result);
+        	} else {
+           	 set_error("PICK: Stack underflow or invalid index");
+            	push(stack, *a);
+        	}
+    	}
+   		 break;
             case OP_TOP:
     			if (stack->top >= 0) {
         		gmp_printf("%Zd\n", stack->data[stack->top]);  // Affiche sans popper
     		} else {
         		set_error("TOP: Stack underflow");
     		}
-    break;
+    	break;
 		case OP_ROLL:
     		pop(stack, *a);
     		if (!error_flag) {
