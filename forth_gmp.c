@@ -21,7 +21,7 @@ typedef enum {
     OP_EXIT, OP_BEGIN, OP_WHILE, OP_REPEAT,
     OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_BIT_NOT, OP_LSHIFT, OP_RSHIFT,
     OP_WORDS, OP_FORGET, OP_VARIABLE, OP_FETCH, OP_STORE,
-    OP_PICK, OP_ROLL, OP_PLUSSTORE,OP_DEPTH
+    OP_PICK, OP_ROLL, OP_PLUSSTORE,OP_DEPTH, OP_TOP 
 } OpCode;
 
 typedef struct {
@@ -509,23 +509,30 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 }
             }
             break;
-case OP_ROLL:
-    pop(stack, *a);
-    if (!error_flag) {
-        long int n = mpz_get_si(*a);
-        if (n > 0 && n <= stack->top + 1) {
-            int index = stack->top - n + 1;  // Ajusté pour éviter l’index négatif
-            if (index < 0) index = 0;  // Sécurité supplémentaire
-            mpz_set(*result, stack->data[index]);
-            for (int i = index; i < stack->top; i++) {
-                mpz_set(stack->data[i], stack->data[i + 1]);
-            }
-            mpz_set(stack->data[stack->top], *result);
-        } else {
-            set_error("ROLL: Invalid index or stack underflow");
-            push(stack, *a);
-        }
-    }
+            case OP_TOP:
+    			if (stack->top >= 0) {
+        		gmp_printf("%Zd\n", stack->data[stack->top]);  // Affiche sans popper
+    		} else {
+        		set_error("TOP: Stack underflow");
+    		}
+    break;
+		case OP_ROLL:
+    		pop(stack, *a);
+    		if (!error_flag) {
+        		long int n = mpz_get_si(*a);
+        		if (n < 0 || n > stack->top + 1) {  // Refuse seulement n négatif ou trop grand
+            		set_error("ROLL: Invalid index or stack underflow");
+           			 push(stack, *a);
+        		} else if (n > 0) {  // Roule seulement si n > 0
+            		int index = stack->top + 1 - n;
+            		mpz_set(*result, stack->data[index]);
+            		for (int i = index; i < stack->top; i++) {
+                		mpz_set(stack->data[i], stack->data[i + 1]);
+            		}
+            		mpz_set(stack->data[stack->top], *result);
+        		}
+        // n = 0 : Ne fait rien, pas d’erreur
+    	}
     break;
         case OP_PLUSSTORE:
             pop(stack, *a);  // Valeur à ajouter
@@ -825,6 +832,9 @@ void compileToken(char *token, char **input_rest) {
     } else if (strcmp(token, "DEPTH") == 0) {
     		instr.opcode = OP_DEPTH;
     		currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "TOP") == 0) {
+    instr.opcode = OP_TOP;
+    currentWord.code[currentWord.code_length++] = instr;
     } else {
         long int index = findCompiledWordIndex(token);
         if (index >= 0) {
@@ -1100,7 +1110,11 @@ void interpret(char *input, Stack *stack) {
     			temp.code_length = 1;
     			temp.code[0] = (Instruction){OP_DEPTH, 0};
     			executeCompiledWord(&temp, stack);
-            } else {
+            } else if (strcmp(token, "TOP") == 0) {
+    			temp.code_length = 1;
+    			temp.code[0] = (Instruction){OP_TOP, 0};
+    			executeCompiledWord(&temp, stack);
+			} else {
                 long int index = findCompiledWordIndex(token);
                 if (index >= 0) {
                     temp.code_length = 1;
