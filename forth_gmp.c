@@ -21,7 +21,7 @@ typedef enum {
     OP_EXIT, OP_BEGIN, OP_WHILE, OP_REPEAT,
     OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_BIT_NOT, OP_LSHIFT, OP_RSHIFT,
     OP_WORDS, OP_FORGET, OP_VARIABLE, OP_FETCH, OP_STORE,
-    OP_PICK, OP_ROLL, OP_PLUSSTORE
+    OP_PICK, OP_ROLL, OP_PLUSSTORE,OP_DEPTH
 } OpCode;
 
 typedef struct {
@@ -535,6 +535,10 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 set_error("PLUSSTORE: Invalid variable index");
             }
             break;
+        case OP_DEPTH:
+    		mpz_set_si(*result, stack->top + 1);
+    		push(stack, *result);
+    		break;
     }
 }
 
@@ -817,6 +821,9 @@ void compileToken(char *token, char **input_rest) {
     } else if (strcmp(token, "+!") == 0) {
         instr.opcode = OP_PLUSSTORE;
         currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "DEPTH") == 0) {
+    		instr.opcode = OP_DEPTH;
+    		currentWord.code[currentWord.code_length++] = instr;
     } else {
         long int index = findCompiledWordIndex(token);
         if (index >= 0) {
@@ -1088,6 +1095,10 @@ void interpret(char *input, Stack *stack) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_PLUSSTORE, 0};
                 executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "DEPTH") == 0) {
+    			temp.code_length = 1;
+    			temp.code[0] = (Instruction){OP_DEPTH, 0};
+    			executeCompiledWord(&temp, stack);
             } else {
                 long int index = findCompiledWordIndex(token);
                 if (index >= 0) {
