@@ -509,23 +509,24 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 }
             }
             break;
-        case OP_ROLL:
-            pop(stack, *a);
-            if (!error_flag) {
-                long int n = mpz_get_si(*a);
-                if (n > 0 && n <= stack->top + 1) {
-                    int index = stack->top - n;
-                    mpz_set(*result, stack->data[index]);
-                    for (int i = index; i < stack->top; i++) {
-                        mpz_set(stack->data[i], stack->data[i + 1]);
-                    }
-                    mpz_set(stack->data[stack->top], *result);
-                } else {
-                    set_error("ROLL: Invalid index or stack underflow");
-                    push(stack, *a);
-                }
+case OP_ROLL:
+    pop(stack, *a);
+    if (!error_flag) {
+        long int n = mpz_get_si(*a);
+        if (n > 0 && n <= stack->top + 1) {
+            int index = stack->top - n + 1;  // Ajusté pour éviter l’index négatif
+            if (index < 0) index = 0;  // Sécurité supplémentaire
+            mpz_set(*result, stack->data[index]);
+            for (int i = index; i < stack->top; i++) {
+                mpz_set(stack->data[i], stack->data[i + 1]);
             }
-            break;
+            mpz_set(stack->data[stack->top], *result);
+        } else {
+            set_error("ROLL: Invalid index or stack underflow");
+            push(stack, *a);
+        }
+    }
+    break;
         case OP_PLUSSTORE:
             pop(stack, *a);  // Valeur à ajouter
             pop(stack, *b);  // Index de la variable
