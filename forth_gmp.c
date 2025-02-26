@@ -21,7 +21,7 @@ typedef enum {
     OP_EXIT, OP_BEGIN, OP_WHILE, OP_REPEAT,
     OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_BIT_NOT, OP_LSHIFT, OP_RSHIFT,
     OP_WORDS, OP_FORGET, OP_VARIABLE, OP_FETCH, OP_STORE,
-    OP_PICK, OP_ROLL, OP_PLUSSTORE,OP_DEPTH, OP_TOP 
+    OP_PICK, OP_ROLL, OP_PLUSSTORE, OP_DEPTH, OP_TOP, OP_MOD  // Inclut MOD
 } OpCode;
 
 typedef struct {
@@ -200,6 +200,17 @@ void exec_arith(Instruction instr, Stack *stack) {
                 }
             }
             break;
+        case OP_MOD:  // Nouvelle primitive MOD
+            pop(stack, *a); pop(stack, *b);
+            if (!error_flag) {
+                if (mpz_cmp_si(*a, 0) != 0) {
+                    mpz_mod(*result, *b, *a);
+                    push(stack, *result);
+                } else {
+                    set_error("Modulo by zero");
+                }
+            }
+            break;
     }
 }
 
@@ -219,7 +230,7 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 push(stack, *result);
             }
             break;
-        case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV:
+        case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_MOD:
             exec_arith(instr, stack);
             break;
         case OP_DUP:
@@ -455,19 +466,25 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
             }
             printf("\n");
             break;
-        case OP_FORGET:
-            if (instr.operand >= 0 && instr.operand < dict_count) {
-                for (int i = instr.operand; i < dict_count; i++) {
-                    free(dictionary[i].name);
-                    for (int j = 0; j < dictionary[i].string_count; j++) {
-                        if (dictionary[i].strings[j]) free(dictionary[i].strings[j]);
-                    }
-                }
-                dict_count = instr.operand;
-            } else {
-                set_error("FORGET: Word index out of range");
+case OP_FORGET:
+    if (instr.operand >= 0 && instr.operand < dict_count) {
+        for (int i = instr.operand; i < dict_count; i++) {
+            if (dictionary[i].name) {
+                free(dictionary[i].name);
+                dictionary[i].name = NULL;  // Évite un double free
             }
-            break;
+            for (int j = 0; j < dictionary[i].string_count; j++) {
+                if (dictionary[i].strings[j]) {
+                    free(dictionary[i].strings[j]);
+                    dictionary[i].strings[j] = NULL;  // Évite un double free
+                }
+            }
+        }
+        dict_count = instr.operand;
+    } else {
+        set_error("FORGET: Word index out of range");
+    }
+    break;
         case OP_VARIABLE:
             if (var_count < VAR_SIZE) {
                 variables[var_count].name = strdup(word->strings[instr.operand]);
@@ -496,49 +513,39 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 set_error("STORE: Invalid variable index");
             }
             break;
-		case OP_PICK:
-    		pop(stack, *a);
-    		if (!error_flag) {
-        	long int n = mpz_get_si(*a);
-        	if (n >= 0 && n <= stack->top + 1) {  // Inclut la profondeur totale
-            	int index = stack->top - n;
-            	if (index < 0) index = 0;  // Sécurité pour n = top + 1
-            	mpz_set(*result, stack->data[index]);
-            	push(stack, *result);
-        	} else {
-           	 set_error("PICK: Stack underflow or invalid index");
-            	push(stack, *a);
-        	}
-    	}
-   		 break;
-            case OP_TOP:
-    			if (stack->top >= 0) {
-        		gmp_printf("%Zd\n", stack->data[stack->top]);  // Affiche sans popper
-    		} else {
-        		set_error("TOP: Stack underflow");
-    		}
-    	break;
-		case OP_ROLL:
-    		pop(stack, *a);
-    		if (!error_flag) {
-        		long int n = mpz_get_si(*a);
-        		if (n < 0 || n > stack->top + 1) {  // Refuse seulement n négatif ou trop grand
-            		set_error("ROLL: Invalid index or stack underflow");
-           			 push(stack, *a);
-        		} else if (n > 0) {  // Roule seulement si n > 0
-            		int index = stack->top + 1 - n;
-            		mpz_set(*result, stack->data[index]);
-            		for (int i = index; i < stack->top; i++) {
-                		mpz_set(stack->data[i], stack->data[i + 1]);
-            		}
-            		mpz_set(stack->data[stack->top], *result);
-        		}
-        // n = 0 : Ne fait rien, pas d’erreur
-    	}
-    break;
+        case OP_PICK:
+            pop(stack, *a);
+            if (!error_flag) {
+                long int n = mpz_get_si(*a);
+                if (n >= 0 && n <= stack->top) {
+                    mpz_set(*result, stack->data[stack->top - n]);
+                    push(stack, *result);
+                } else {
+                    set_error("PICK: Stack underflow or invalid index");
+                    push(stack, *a);
+                }
+            }
+            break;
+        case OP_ROLL:
+            pop(stack, *a);
+            if (!error_flag) {
+                long int n = mpz_get_si(*a);
+                if (n < 0 || n > stack->top + 1) {
+                    set_error("ROLL: Invalid index or stack underflow");
+                    push(stack, *a);
+                } else if (n > 0) {
+                    int index = stack->top + 1 - n;
+                    mpz_set(*result, stack->data[index]);
+                    for (int i = index; i < stack->top; i++) {
+                        mpz_set(stack->data[i], stack->data[i + 1]);
+                    }
+                    mpz_set(stack->data[stack->top], *result);
+                }
+            }
+            break;
         case OP_PLUSSTORE:
-            pop(stack, *a);  // Valeur à ajouter
-            pop(stack, *b);  // Index de la variable
+            pop(stack, *a);
+            pop(stack, *b);
             if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < var_count) {
                 mpz_add(variables[mpz_get_si(*b)].value, variables[mpz_get_si(*b)].value, *a);
             } else if (!error_flag) {
@@ -546,9 +553,16 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
             }
             break;
         case OP_DEPTH:
-    		mpz_set_si(*result, stack->top + 1);
-    		push(stack, *result);
-    		break;
+            mpz_set_si(*result, stack->top + 1);
+            push(stack, *result);
+            break;
+        case OP_TOP:
+            if (stack->top >= 0) {
+                gmp_printf("%Zd\n", stack->data[stack->top]);
+            } else {
+                set_error("TOP: Stack underflow");
+            }
+            break;
     }
 }
 
@@ -564,7 +578,7 @@ void addCompiledWord(char *name, Instruction *code, long int code_length, char *
     int existing_index = findCompiledWordIndex(name);
     if (existing_index >= 0) {
         CompiledWord *word = &dictionary[existing_index];
-        free(word->name);
+        if (word->name) free(word->name);
         for (int i = 0; i < word->string_count; i++) {
             if (word->strings[i]) free(word->strings[i]);
         }
@@ -588,7 +602,6 @@ void addCompiledWord(char *name, Instruction *code, long int code_length, char *
         set_error("Dictionary full");
     }
 }
-
 int findCompiledWordIndex(char *name) {
     for (int i = 0; i < dict_count; i++) {
         if (strcmp(dictionary[i].name, name) == 0) return i;
@@ -609,6 +622,9 @@ void compileToken(char *token, char **input_rest) {
         currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "/") == 0) {
         instr.opcode = OP_DIV;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "MOD") == 0) {  // Ajout de MOD
+        instr.opcode = OP_MOD;
         currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "DUP") == 0) {
         instr.opcode = OP_DUP;
@@ -832,11 +848,11 @@ void compileToken(char *token, char **input_rest) {
         instr.opcode = OP_PLUSSTORE;
         currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "DEPTH") == 0) {
-    		instr.opcode = OP_DEPTH;
-    		currentWord.code[currentWord.code_length++] = instr;
+        instr.opcode = OP_DEPTH;
+        currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "TOP") == 0) {
-    instr.opcode = OP_TOP;
-    currentWord.code[currentWord.code_length++] = instr;
+        instr.opcode = OP_TOP;
+        currentWord.code[currentWord.code_length++] = instr;
     } else {
         long int index = findCompiledWordIndex(token);
         if (index >= 0) {
@@ -966,6 +982,10 @@ void interpret(char *input, Stack *stack) {
             } else if (strcmp(token, "/") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_DIV, 0};
+                executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "MOD") == 0) {  // Ajout de MOD
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_MOD, 0};
                 executeCompiledWord(&temp, stack);
             } else if (strcmp(token, "DUP") == 0) {
                 temp.code_length = 1;
@@ -1109,14 +1129,14 @@ void interpret(char *input, Stack *stack) {
                 temp.code[0] = (Instruction){OP_PLUSSTORE, 0};
                 executeCompiledWord(&temp, stack);
             } else if (strcmp(token, "DEPTH") == 0) {
-    			temp.code_length = 1;
-    			temp.code[0] = (Instruction){OP_DEPTH, 0};
-    			executeCompiledWord(&temp, stack);
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_DEPTH, 0};
+                executeCompiledWord(&temp, stack);
             } else if (strcmp(token, "TOP") == 0) {
-    			temp.code_length = 1;
-    			temp.code[0] = (Instruction){OP_TOP, 0};
-    			executeCompiledWord(&temp, stack);
-			} else {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_TOP, 0};
+                executeCompiledWord(&temp, stack);
+            } else {
                 long int index = findCompiledWordIndex(token);
                 if (index >= 0) {
                     temp.code_length = 1;
