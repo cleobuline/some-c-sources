@@ -21,7 +21,7 @@ typedef enum {
     OP_EXIT, OP_BEGIN, OP_WHILE, OP_REPEAT,
     OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_BIT_NOT, OP_LSHIFT, OP_RSHIFT,
     OP_WORDS, OP_FORGET, OP_VARIABLE, OP_FETCH, OP_STORE,
-    OP_PICK
+    OP_PICK, OP_ROLL, OP_PLUSSTORE
 } OpCode;
 
 typedef struct {
@@ -509,6 +509,32 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 }
             }
             break;
+        case OP_ROLL:
+            pop(stack, *a);
+            if (!error_flag) {
+                long int n = mpz_get_si(*a);
+                if (n > 0 && n <= stack->top + 1) {
+                    int index = stack->top - n;
+                    mpz_set(*result, stack->data[index]);
+                    for (int i = index; i < stack->top; i++) {
+                        mpz_set(stack->data[i], stack->data[i + 1]);
+                    }
+                    mpz_set(stack->data[stack->top], *result);
+                } else {
+                    set_error("ROLL: Invalid index or stack underflow");
+                    push(stack, *a);
+                }
+            }
+            break;
+        case OP_PLUSSTORE:
+            pop(stack, *a);  // Valeur à ajouter
+            pop(stack, *b);  // Index de la variable
+            if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < var_count) {
+                mpz_add(variables[mpz_get_si(*b)].value, variables[mpz_get_si(*b)].value, *a);
+            } else if (!error_flag) {
+                set_error("PLUSSTORE: Invalid variable index");
+            }
+            break;
     }
 }
 
@@ -785,6 +811,12 @@ void compileToken(char *token, char **input_rest) {
     } else if (strcmp(token, "PICK") == 0) {
         instr.opcode = OP_PICK;
         currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "ROLL") == 0) {
+        instr.opcode = OP_ROLL;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "+!") == 0) {
+        instr.opcode = OP_PLUSSTORE;
+        currentWord.code[currentWord.code_length++] = instr;
     } else {
         long int index = findCompiledWordIndex(token);
         if (index >= 0) {
@@ -1047,6 +1079,14 @@ void interpret(char *input, Stack *stack) {
             } else if (strcmp(token, "PICK") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_PICK, 0};
+                executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "ROLL") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_ROLL, 0};
+                executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "+!") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_PLUSSTORE, 0};
                 executeCompiledWord(&temp, stack);
             } else {
                 long int index = findCompiledWordIndex(token);
