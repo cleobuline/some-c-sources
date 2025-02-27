@@ -17,7 +17,7 @@
 #define MPZ_POOL_SIZE 3
 
 #define BOT_NAME "ForthBot"
-#define CHANNEL "#labynet"
+#define CHANNEL "#test"
 
 typedef enum {
     OP_PUSH, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_DUP, OP_SWAP, OP_OVER,
@@ -420,17 +420,22 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
             if (loop_stack_top >= 0) push(stack, loop_stack[loop_stack_top].index);
             else set_error("I used outside of a loop");
             break;
-        case OP_DO:
-            pop(stack, *b); pop(stack, *a);
-            if (!error_flag && loop_stack_top < LOOP_STACK_SIZE - 1) {
-                loop_stack_top++;
-                mpz_init_set(loop_stack[loop_stack_top].index, *b);
-                mpz_init_set(loop_stack[loop_stack_top].limit, *a);
-                loop_stack[loop_stack_top].addr = *ip + 1;
-            } else if (!error_flag) {
-                set_error("Loop stack overflow");
-            }
-            break;
+case OP_DO:
+    if (stack->top < 1) { // Vérifie qu’il y a au moins 2 éléments
+        set_error("DO: Stack underflow");
+        break;
+    }
+    pop(stack, *b); // Start
+    pop(stack, *a); // Limit
+    if (!error_flag && loop_stack_top < LOOP_STACK_SIZE - 1) {
+        loop_stack_top++;
+        mpz_init_set(loop_stack[loop_stack_top].index, *b);
+        mpz_init_set(loop_stack[loop_stack_top].limit, *a);
+        loop_stack[loop_stack_top].addr = *ip + 1;
+    } else if (!error_flag) {
+        set_error("Loop stack overflow");
+    }
+    break;
         case OP_LOOP:
             if (loop_stack_top >= 0) {
                 mpz_add_ui(loop_stack[loop_stack_top].index, loop_stack[loop_stack_top].index, 1);
@@ -597,14 +602,15 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 set_error("FETCH: Invalid variable index");
             }
             break;
-        case OP_STORE:
-            pop(stack, *a); pop(stack, *b);
-            if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < var_count) {
-                mpz_set(variables[mpz_get_si(*b)].value, *a);
-            } else if (!error_flag) {
-                set_error("STORE: Invalid variable index");
-            }
-            break;
+case OP_STORE:
+    pop(stack, *b); // Index d’abord
+    pop(stack, *a); // Valeur ensuite
+    if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < var_count) {
+        mpz_set(variables[mpz_get_si(*b)].value, *a);
+    } else if (!error_flag) {
+        set_error("STORE: Invalid variable index");
+    }
+    break;
         case OP_PICK:
             pop(stack, *a);
             if (!error_flag) {
