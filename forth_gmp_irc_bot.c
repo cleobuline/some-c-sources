@@ -29,7 +29,7 @@ typedef enum {
     OP_WORDS, OP_FORGET, OP_VARIABLE, OP_FETCH, OP_STORE,
     OP_PICK, OP_ROLL, OP_PLUSSTORE, OP_DEPTH, OP_TOP, OP_NIP, OP_MOD,
     OP_IRC_CONNECT, OP_IRC_SEND ,
-    OP_CREATE, OP_ALLOT, OP_FETCH_AT// Ajoutés pour IRC
+    OP_CREATE, OP_ALLOT,OP_SEE  
 } OpCode;
 
 typedef struct {
@@ -312,7 +312,85 @@ void exec_arith(Instruction instr, Stack *stack) {
             break;
     }
 }
-
+void print_word_definition_irc(int index, Stack *stack) {
+    if (index < 0 || index >= dict_count) {
+        send_to_channel("SEE: Unknown word");
+        return;
+    }
+    CompiledWord *word = &dictionary[index];
+    char def_msg[512] = "";
+    snprintf(def_msg, sizeof(def_msg), ": %s ", word->name);
+    for (int i = 0; i < word->code_length; i++) {
+        Instruction instr = word->code[i];
+        char instr_str[64];
+        switch (instr.opcode) {
+            case OP_PUSH:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), "%s ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "%ld ", instr.operand);
+                }
+                break;
+            case OP_ADD: snprintf(instr_str, sizeof(instr_str), "+ "); break;
+            case OP_SUB: snprintf(instr_str, sizeof(instr_str), "- "); break;
+            case OP_MUL: snprintf(instr_str, sizeof(instr_str), "* "); break;
+            case OP_DIV: snprintf(instr_str, sizeof(instr_str), "/ "); break;
+            case OP_MOD: snprintf(instr_str, sizeof(instr_str), "MOD "); break;
+            case OP_DUP: snprintf(instr_str, sizeof(instr_str), "DUP "); break;
+            case OP_SWAP: snprintf(instr_str, sizeof(instr_str), "SWAP "); break;
+            case OP_OVER: snprintf(instr_str, sizeof(instr_str), "OVER "); break;
+            case OP_ROT: snprintf(instr_str, sizeof(instr_str), "ROT "); break;
+            case OP_DROP: snprintf(instr_str, sizeof(instr_str), "DROP "); break;
+            case OP_NIP: snprintf(instr_str, sizeof(instr_str), "NIP "); break;
+            case OP_DOT: snprintf(instr_str, sizeof(instr_str), ". "); break;
+            case OP_DOT_S: snprintf(instr_str, sizeof(instr_str), ".S "); break;
+            case OP_DOT_QUOTE:
+                if (instr.operand < word->string_count) {
+                    snprintf(instr_str, sizeof(instr_str), ".\" %s\" ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), ".\" ???\" ");
+                }
+                break;
+            case OP_CR: snprintf(instr_str, sizeof(instr_str), "CR "); break;
+            case OP_FLUSH: snprintf(instr_str, sizeof(instr_str), "FLUSH "); break;
+            case OP_EQ: snprintf(instr_str, sizeof(instr_str), "= "); break;
+            case OP_LT: snprintf(instr_str, sizeof(instr_str), "< "); break;
+            case OP_GT: snprintf(instr_str, sizeof(instr_str), "> "); break;
+            case OP_AND: snprintf(instr_str, sizeof(instr_str), "AND "); break;
+            case OP_OR: snprintf(instr_str, sizeof(instr_str), "OR "); break;
+            case OP_NOT: snprintf(instr_str, sizeof(instr_str), "NOT "); break;
+            case OP_I: snprintf(instr_str, sizeof(instr_str), "I "); break;
+            case OP_DO: snprintf(instr_str, sizeof(instr_str), "DO "); break;
+            case OP_LOOP: snprintf(instr_str, sizeof(instr_str), "LOOP "); break;
+            case OP_BRANCH_FALSE: snprintf(instr_str, sizeof(instr_str), "IF "); break;
+            case OP_BRANCH: snprintf(instr_str, sizeof(instr_str), "ELSE "); break;
+            case OP_END: snprintf(instr_str, sizeof(instr_str), "; "); break;
+            case OP_CALL:
+                if (instr.operand < dict_count) {
+                    snprintf(instr_str, sizeof(instr_str), "%s ", dictionary[instr.operand].name);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "(CALL %ld) ", instr.operand);
+                }
+                break;
+            case OP_VARIABLE: snprintf(instr_str, sizeof(instr_str), "VARIABLE "); break;
+            case OP_CREATE: snprintf(instr_str, sizeof(instr_str), "CREATE "); break;
+            case OP_ALLOT: snprintf(instr_str, sizeof(instr_str), "ALLOT "); break;
+            case OP_FETCH: snprintf(instr_str, sizeof(instr_str), "@ "); break;
+            case OP_STORE: snprintf(instr_str, sizeof(instr_str), "! "); break;
+            case OP_PICK: snprintf(instr_str, sizeof(instr_str), "PICK "); break;
+            case OP_ROLL: snprintf(instr_str, sizeof(instr_str), "ROLL "); break;
+            case OP_PLUSSTORE: snprintf(instr_str, sizeof(instr_str), "+! "); break;
+            case OP_DEPTH: snprintf(instr_str, sizeof(instr_str), "DEPTH "); break;
+            case OP_TOP: snprintf(instr_str, sizeof(instr_str), "TOP "); break;
+            case OP_SEE: snprintf(instr_str, sizeof(instr_str), "SEE "); break;
+            case OP_IRC_CONNECT: snprintf(instr_str, sizeof(instr_str), "IRC-CONNECT "); break;
+            case OP_IRC_SEND: snprintf(instr_str, sizeof(instr_str), "IRC-SEND "); break;
+            default: snprintf(instr_str, sizeof(instr_str), "(OP_%d) ", instr.opcode); break;
+        }
+        strncat(def_msg, instr_str, sizeof(def_msg) - strlen(def_msg) - 1);
+    }
+    send_to_channel(def_msg);
+}
 void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledWord *word) {
     if (error_flag) return;
     mpz_t *a = &mpz_pool[0], *b = &mpz_pool[1], *result = &mpz_pool[2];
@@ -732,6 +810,14 @@ case OP_STORE: // ! : [value index array -- ] ou [value array -- ]
         set_error("STORE: Invalid memory index");
     }
     break;
+    case OP_SEE:
+    pop(stack, *a);
+    if (stack->top >= -1 && mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) < dict_count) {
+        print_word_definition_irc(mpz_get_si(*a), stack);
+    } else {
+        send_to_channel("SEE: Invalid word index");
+    }
+    break;
         case OP_PICK:
             pop(stack, *a);
             if (!error_flag) {
@@ -1085,7 +1171,26 @@ void compileToken(char *token, char **input_rest) {
         currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "IRC-SEND") == 0) {
         instr.opcode = OP_IRC_SEND;
-
+    } else if (strcmp(token, "SEE") == 0) {
+    char *next_token = strtok_r(NULL, " \t\n", input_rest);
+    if (!next_token) {
+        send_to_channel("SEE requires a word name");
+        return;
+    }
+    int index = findCompiledWordIndex(next_token);
+    if (index >= 0) {
+        instr.opcode = OP_PUSH;
+        instr.operand = currentWord.string_count;
+        currentWord.strings[currentWord.string_count++] = strdup(next_token);
+        currentWord.code[currentWord.code_length++] = instr;
+        instr.opcode = OP_SEE;
+        instr.operand = 0;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "SEE: Unknown word: %s", next_token);
+        send_to_channel(msg);
+    }
     } else {
         long int index = findCompiledWordIndex(token);
         if (index >= 0) {
@@ -1408,6 +1513,25 @@ void interpret(char *input, Stack *stack) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_ALLOT, 0};
                 executeCompiledWord(&temp, stack);
+        	} else if (strcmp(token, "SEE") == 0) {
+    char *next_token = strtok_r(NULL, " \t\n", &saveptr);
+    if (!next_token) {
+        send_to_channel("SEE requires a word name");
+        mpz_clear(big_value);
+        return;
+    }
+    int index = findCompiledWordIndex(next_token);
+    if (index >= 0) {
+        mpz_set_si(big_value, index);
+        push(stack, big_value);
+        temp.code_length = 1;
+        temp.code[0] = (Instruction){OP_SEE, 0};
+        executeCompiledWord(&temp, stack);
+    } else {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "SEE: Unknown word: %s", next_token);
+        send_to_channel(msg);
+    }
             } else {
                 long int index = findCompiledWordIndex(token);
                 if (index >= 0) {
