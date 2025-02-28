@@ -29,7 +29,7 @@ typedef enum {
     OP_WORDS, OP_FORGET, OP_VARIABLE, OP_FETCH, OP_STORE,
     OP_PICK, OP_ROLL, OP_PLUSSTORE, OP_DEPTH, OP_TOP, OP_NIP, OP_MOD,
     OP_IRC_CONNECT, OP_IRC_SEND ,
-    OP_CREATE, OP_ALLOT, OP_STORE_AT, OP_FETCH_AT// Ajoutés pour IRC
+    OP_CREATE, OP_ALLOT, OP_FETCH_AT// Ajoutés pour IRC
 } OpCode;
 
 typedef struct {
@@ -77,6 +77,20 @@ typedef struct {
     long int size;
 } Array;
 
+typedef enum {
+    MEMORY_VARIABLE,
+    MEMORY_ARRAY
+} MemoryType;
+
+typedef struct {
+    char *name;
+    MemoryType type;  // VARIABLE ou ARRAY
+    mpz_t *values;    // Pointeur vers un tableau de mpz_t
+    long int size;    // Taille (1 pour VARIABLE, n pour ARRAY)
+} Memory;
+
+Memory memory[VAR_SIZE];
+long int memory_count = 0;
 Array arrays[VAR_SIZE];
 long int array_count = 0;
 
@@ -163,11 +177,10 @@ void initStack(Stack *stack) {
         mpz_init(stack->data[i]);
     }
     for (int i = 0; i < VAR_SIZE; i++) {
-        variables[i].name = NULL;
-        mpz_init(variables[i].value);
-        arrays[i].name = NULL;
-        arrays[i].values = NULL;
-        arrays[i].size = 0;
+        memory[i].name = NULL;
+        memory[i].type = MEMORY_VARIABLE; // Par défaut, mais non utilisé si pas alloué
+        memory[i].values = NULL;
+        memory[i].size = 0;
     }
 }
 
@@ -175,21 +188,16 @@ void clearStack(Stack *stack) {
     for (int i = 0; i < STACK_SIZE; i++) {
         mpz_clear(stack->data[i]);
     }
-    for (int i = 0; i < var_count; i++) {
-        if (variables[i].name) free(variables[i].name);
-        mpz_clear(variables[i].value);
-    }
-    var_count = 0;
-    for (int i = 0; i < array_count; i++) {
-        if (arrays[i].name) free(arrays[i].name);
-        if (arrays[i].values) {
-            for (int j = 0; j < arrays[i].size; j++) {
-                mpz_clear(arrays[i].values[j]);
+    for (int i = 0; i < memory_count; i++) {
+        if (memory[i].name) free(memory[i].name);
+        if (memory[i].values) {
+            for (int j = 0; j < memory[i].size; j++) {
+                mpz_clear(memory[i].values[j]);
             }
-            free(arrays[i].values);
+            free(memory[i].values);
         }
     }
-    array_count = 0;
+    memory_count = 0;
     for (int i = 0; i < dict_count; i++) {
         if (dictionary[i].name) free(dictionary[i].name);
         for (int j = 0; j < dictionary[i].string_count; j++) {
@@ -198,6 +206,14 @@ void clearStack(Stack *stack) {
     }
     dict_count = 0;
 }
+
+int findMemoryIndex(char *name) {
+    for (int i = 0; i < memory_count; i++) {
+        if (memory[i].name && strcmp(memory[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
 void push(Stack *stack, mpz_t value) {
     if (stack->top < STACK_SIZE - 1) {
         mpz_set(stack->data[++stack->top], value);
@@ -604,35 +620,118 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 set_error("FORGET: Word index out of range");
             }
             break;
-        case OP_VARIABLE:
-            if (var_count < VAR_SIZE) {
-                variables[var_count].name = strdup(word->strings[instr.operand]);
-                mpz_set_ui(variables[var_count].value, 0);
-                Instruction var_code[1] = {{OP_PUSH, var_count}};
-                char *var_strings[1] = {NULL};
-                addCompiledWord(variables[var_count].name, var_code, 1, var_strings, 0);
-                var_count++;
-            } else {
-                set_error("Variable table full");
-            }
+case OP_VARIABLE:
+    if (memory_count < VAR_SIZE) {
+        memory[memory_count].name = strdup(word->strings[instr.operand]);
+        memory[memory_count].type = MEMORY_VARIABLE;
+        memory[memory_count].size = 1;
+        memory[memory_count].values = malloc(1 * sizeof(mpz_t));
+        if (!memory[memory_count].values) {
+            set_error("VARIABLE: Memory allocation failed");
             break;
-        case OP_FETCH:
-            pop(stack, *a);
-            if (!error_flag && mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) < var_count) {
-                push(stack, variables[mpz_get_si(*a)].value);
+        }
+        mpz_init(memory[memory_count].values[0]);
+        mpz_set_ui(memory[memory_count].values[0], 0);
+        Instruction var_code[1] = {{OP_PUSH, memory_count}};
+        char *var_strings[1] = {NULL};
+        addCompiledWord(memory[memory_count].name, var_code, 1, var_strings, 0);
+        mpz_set_si(*result, memory_count);
+        push(stack, *result);
+        memory_count++;
+    } else {
+        set_error("Memory table full");
+    }
+    break;
+
+case OP_CREATE:
+    if (memory_count < VAR_SIZE) {
+        memory[memory_count].name = strdup(word->strings[instr.operand]);
+        memory[memory_count].type = MEMORY_ARRAY;
+        memory[memory_count].size = 0; // Taille définie par ALLOT
+        memory[memory_count].values = NULL;
+        Instruction var_code[1] = {{OP_PUSH, memory_count}};
+        char *var_strings[1] = {NULL};
+        addCompiledWord(memory[memory_count].name, var_code, 1, var_strings, 0);
+        mpz_set_si(*result, memory_count);
+        push(stack, *result);
+        memory_count++;
+    } else {
+        set_error("Memory table full");
+    }
+    break;
+
+case OP_ALLOT:
+    pop(stack, *a); // Size
+    pop(stack, *b); // Memory index
+    if (!error_flag && mpz_fits_slong_p(*a) && mpz_fits_slong_p(*b)) {
+        long int size = mpz_get_si(*a);
+        int index = mpz_get_si(*b);
+        if (index >= 0 && index < memory_count && memory[index].type == MEMORY_ARRAY) {
+            if (memory[index].values) {
+                for (int i = 0; i < memory[index].size; i++) {
+                    mpz_clear(memory[index].values[i]);
+                }
+                free(memory[index].values);
+            }
+            memory[index].values = malloc(size * sizeof(mpz_t));
+            if (!memory[index].values) {
+                set_error("ALLOT: Memory allocation failed");
+                break;
+            }
+            memory[index].size = size;
+            for (int i = 0; i < size; i++) {
+                mpz_init(memory[index].values[i]);
+                mpz_set_ui(memory[index].values[i], 0);
+            }
+        } else if (!error_flag) {
+            set_error("ALLOT: Invalid memory index or not an array");
+        }
+    } else if (!error_flag) {
+        set_error("ALLOT: Invalid size or memory index");
+    }
+    break;
+
+case OP_FETCH: // @ : [index array -- value] ou [array -- value]
+    pop(stack, *b); // Memory index
+    if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < memory_count) {
+        int idx = mpz_get_si(*b);
+        if (memory[idx].type == MEMORY_VARIABLE) {
+            push(stack, memory[idx].values[0]); // Variable : indice implicite 0
+        } else if (memory[idx].type == MEMORY_ARRAY) {
+            pop(stack, *a); // Index explicite pour tableau
+            if (!error_flag && mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) < memory[idx].size) {
+                push(stack, memory[idx].values[mpz_get_si(*a)]);
             } else if (!error_flag) {
-                set_error("FETCH: Invalid variable index");
+                set_error("FETCH: Index out of bounds for array");
             }
-            break;
-        case OP_STORE:
-            pop(stack, *b); // Index d’abord
-            pop(stack, *a); // Valeur ensuite
-            if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < var_count) {
-                mpz_set(variables[mpz_get_si(*b)].value, *a);
+        }
+    } else if (!error_flag) {
+        set_error("FETCH: Invalid memory index");
+    }
+    break;
+
+case OP_STORE: // ! : [value index array -- ] ou [value array -- ]
+    pop(stack, *result); // Memory index
+    if (!error_flag && mpz_fits_slong_p(*result) && mpz_get_si(*result) >= 0 && mpz_get_si(*result) < memory_count) {
+        int idx = mpz_get_si(*result);
+        if (memory[idx].type == MEMORY_VARIABLE) {
+            pop(stack, *a); // Valeur
+            if (!error_flag) {
+                mpz_set(memory[idx].values[0], *a); // Variable : indice implicite 0
+            }
+        } else if (memory[idx].type == MEMORY_ARRAY) {
+            pop(stack, *b); // Index explicite pour tableau
+            pop(stack, *a); // Valeur
+            if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < memory[idx].size) {
+                mpz_set(memory[idx].values[mpz_get_si(*b)], *a);
             } else if (!error_flag) {
-                set_error("STORE: Invalid variable index");
+                set_error("STORE: Index out of bounds for array");
             }
-            break;
+        }
+    } else if (!error_flag) {
+        set_error("STORE: Invalid memory index");
+    }
+    break;
         case OP_PICK:
             pop(stack, *a);
             if (!error_flag) {
@@ -690,82 +789,8 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
         case OP_IRC_SEND:
             irc_send(stack);
             break;
-        case OP_CREATE:
-            if (array_count < VAR_SIZE) {
-                arrays[array_count].name = strdup(word->strings[instr.operand]);
-                arrays[array_count].values = NULL;
-                arrays[array_count].size = 0;
-                Instruction var_code[1] = {{OP_PUSH, array_count}};
-                char *var_strings[1] = {NULL};
-                addCompiledWord(arrays[array_count].name, var_code, 1, var_strings, 0);
-                mpz_set_si(*result, array_count); // Pousse l’index immédiatement
-                push(stack, *result);
-                array_count++;
-            } else {
-                set_error("Array table full");
-            }
-            break;
 
-        case OP_ALLOT:
-            pop(stack, *a); // Size (ex. 100)
-            pop(stack, *b); // Array index (ex. 0)
-            if (!error_flag && mpz_fits_slong_p(*a) && mpz_fits_slong_p(*b)) {
-                long int size = mpz_get_si(*a);
-                int index = mpz_get_si(*b);
-                if (index >= 0 && index < array_count) {
-                    if (arrays[index].values) {
-                        for (int i = 0; i < arrays[index].size; i++) {
-                            mpz_clear(arrays[index].values[i]);
-                        }
-                        free(arrays[index].values);
-                    }
-                    arrays[index].values = malloc(size * sizeof(mpz_t));
-                    if (!arrays[index].values) {
-                        set_error("ALLOT: Memory allocation failed");
-                        break;
-                    }
-                    arrays[index].size = size;
-                    for (int i = 0; i < size; i++) {
-                        mpz_init(arrays[index].values[i]);
-                        mpz_set_ui(arrays[index].values[i], 0);
-                    }
-                } else if (!error_flag) {
-                    set_error("ALLOT: Invalid array index");
-                }
-            } else if (!error_flag) {
-                set_error("ALLOT: Invalid size or array index");
-            }
-            break;
-        case OP_STORE_AT:
-            pop(stack, *result); // Array index (ex. 0 pour FOO)
-            pop(stack, *b);      // Index dans le tableau (ex. 5)
-            pop(stack, *a);      // Valeur à stocker (ex. 42)
-            if (!error_flag && mpz_fits_slong_p(*result) && mpz_get_si(*result) >= 0 && mpz_get_si(*result) < array_count) {
-                int arr_idx = mpz_get_si(*result);
-                if (mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < arrays[arr_idx].size) {
-                    mpz_set(arrays[arr_idx].values[mpz_get_si(*b)], *a);
-                } else if (!error_flag) {
-                    set_error("STORE_AT: Index out of bounds");
-                }
-            } else if (!error_flag) {
-                set_error("STORE_AT: Invalid array index");
-            }
-            break;
 
-        case OP_FETCH_AT:
-            pop(stack, *b); // Array index (ex. 0 pour FOO)
-            pop(stack, *a); // Index dans le tableau (ex. 5)
-            if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < array_count) {
-                int arr_idx = mpz_get_si(*b);
-                if (mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) < arrays[arr_idx].size) {
-                    push(stack, arrays[arr_idx].values[mpz_get_si(*a)]);
-                } else if (!error_flag) {
-                    set_error("FETCH_AT: Index out of bounds");
-                }
-            } else if (!error_flag) {
-                set_error("FETCH_AT: Invalid array index");
-            }
-            break;
             }
 }
 
@@ -1060,13 +1085,7 @@ void compileToken(char *token, char **input_rest) {
         currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "IRC-SEND") == 0) {
         instr.opcode = OP_IRC_SEND;
-        currentWord.code[currentWord.code_length++] = instr;
-        } else if (strcmp(token, "!@") == 0) {
-    instr.opcode = OP_STORE_AT;
-    currentWord.code[currentWord.code_length++] = instr;
-} else if (strcmp(token, "@@") == 0) {
-    instr.opcode = OP_FETCH_AT;
-    currentWord.code[currentWord.code_length++] = instr;
+
     } else {
         long int index = findCompiledWordIndex(token);
         if (index >= 0) {
@@ -1322,20 +1341,25 @@ void interpret(char *input, Stack *stack) {
                     send_to_channel(msg);
                 }
             } else if (strcmp(token, "VARIABLE") == 0) {
-                char *next_token = strtok_r(NULL, " \t\n", &saveptr);
-                if (!next_token) {
-                    send_to_channel("VARIABLE requires a name");
-                    return;
-                }
-                temp.code_length = 1;
-                temp.code[0].opcode = OP_VARIABLE;
-                temp.code[0].operand = temp.string_count;
-                temp.strings[temp.string_count++] = strdup(next_token);
-                executeCompiledWord(&temp, stack);
-            } else if (strcmp(token, "@") == 0) {
-                temp.code_length = 1;
-                temp.code[0] = (Instruction){OP_FETCH, 0};
-                executeCompiledWord(&temp, stack);
+    char *next_token = strtok_r(NULL, " \t\n", &saveptr);
+    if (!next_token) {
+        send_to_channel("VARIABLE requires a name");
+        mpz_clear(big_value);
+        return;
+    }
+    temp.code_length = 1;
+    temp.code[0].opcode = OP_VARIABLE;
+    temp.code[0].operand = temp.string_count;
+    temp.strings[temp.string_count++] = strdup(next_token);
+    executeCompiledWord(&temp, stack);
+} else if (strcmp(token, "!") == 0) {
+    temp.code_length = 1;
+    temp.code[0] = (Instruction){OP_STORE, 0};
+    executeCompiledWord(&temp, stack);
+} else if (strcmp(token, "@") == 0) {
+    temp.code_length = 1;
+    temp.code[0] = (Instruction){OP_FETCH, 0};
+    executeCompiledWord(&temp, stack);
             } else if (strcmp(token, "!") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_STORE, 0};
@@ -1380,14 +1404,6 @@ void interpret(char *input, Stack *stack) {
                 temp.code[0].operand = temp.string_count;
                 temp.strings[temp.string_count++] = strdup(next_token);
                 executeCompiledWord(&temp, stack);
-                } else if (strcmp(token, "!@") == 0) {
-                temp.code_length = 1;
-                temp.code[0] = (Instruction){OP_STORE_AT, 0};
-                executeCompiledWord(&temp, stack);
-            } else if (strcmp(token, "@@") == 0) {
-                temp.code_length = 1;
-                temp.code[0] = (Instruction){OP_FETCH_AT, 0};
-                executeCompiledWord(&temp, stack);
             } else if (strcmp(token, "ALLOT") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_ALLOT, 0};
@@ -1424,47 +1440,57 @@ int main() {
     Stack stack;
     initStack(&stack);
     init_mpz_pool();
-
+int sock;
     printf("Forth IRC Bot starting on labynet.fr\n");
-    irc_connect(&stack);
-    if (stack.top < 0) {
-        printf("Failed to connect\n");
-        return 1;
-    }
-    int sock = mpz_get_si(stack.data[stack.top]);
-    stack.top--;
 
     char buffer[512];
     while (1) {
-        int bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-        if (bytes <= 0) {
-            printf("Disconnected from labynet.fr\n");
-            break;
-        }
-        buffer[bytes] = '\0';
-        printf("Received: %s", buffer);
-
-        if (strstr(buffer, "PING ") == buffer) {
-            char pong[512];
-            snprintf(pong, sizeof(pong), "PONG %s\r\n", buffer + 5);
-            send(sock, pong, strlen(pong), 0);
-            printf("Sent: %s", pong);
+        // Tentative de connexion initiale ou reconnexion
+        irc_connect(&stack);
+        if (stack.top < 0) {
+            printf("Failed to connect, retrying in 5 seconds...\n");
+            sleep(5); // Attendre 5 secondes avant de réessayer
             continue;
         }
+         sock = mpz_get_si(stack.data[stack.top]);
+        stack.top--;
 
-        char prefix[512];
-        snprintf(prefix, sizeof(prefix), "PRIVMSG %s :%s:", CHANNEL, BOT_NAME);
-        char *msg = strstr(buffer, prefix);
-        if (msg) {
-            char forth_cmd[256];
-            snprintf(forth_cmd, sizeof(forth_cmd), "%s", msg + strlen(prefix));
-            forth_cmd[strcspn(forth_cmd, "\r\n")] = '\0';
-            printf("Executing: %s\n", forth_cmd);
+        printf("Connected to labynet.fr\n");
 
-            interpret(forth_cmd, &stack);
+        // Boucle de gestion IRC
+        while (1) {
+            int bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
+            if (bytes <= 0) {
+                printf("Disconnected from labynet.fr, attempting to reconnect in 5 seconds...\n");
+                close(sock);
+                sleep(5); // Délai avant reconnexion
+                break; // Sort de la boucle interne pour retenter la connexion
+            }
+            buffer[bytes] = '\0';
+            printf("Received: %s", buffer);
+
+            if (strstr(buffer, "PING ") == buffer) {
+                char pong[512];
+                snprintf(pong, sizeof(pong), "PONG %s\r\n", buffer + 5);
+                send(sock, pong, strlen(pong), 0);
+                printf("Sent: %s", pong);
+                continue;
+            }
+
+            char prefix[512];
+            snprintf(prefix, sizeof(prefix), "PRIVMSG %s :%s:", CHANNEL, BOT_NAME);
+            char *msg = strstr(buffer, prefix);
+            if (msg) {
+                char forth_cmd[256];
+                snprintf(forth_cmd, sizeof(forth_cmd), "%s", msg + strlen(prefix));
+                forth_cmd[strcspn(forth_cmd, "\r\n")] = '\0';
+                printf("Executing: %s\n", forth_cmd);
+                interpret(forth_cmd, &stack);
+            }
         }
     }
 
+    // Nettoyage (jamais atteint dans cette boucle infinie, mais bon à garder)
     clearStack(&stack);
     close(sock);
     clear_mpz_pool();
