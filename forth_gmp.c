@@ -21,7 +21,7 @@ typedef enum {
     OP_EXIT, OP_BEGIN, OP_WHILE, OP_REPEAT,
     OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_BIT_NOT, OP_LSHIFT, OP_RSHIFT,
     OP_WORDS, OP_FORGET, OP_VARIABLE, OP_FETCH, OP_STORE,
-    OP_PICK, OP_ROLL, OP_PLUSSTORE, OP_DEPTH, OP_TOP, OP_MOD  // Inclut MOD
+    OP_PICK, OP_ROLL, OP_PLUSSTORE, OP_DEPTH, OP_TOP,OP_NIP, OP_MOD ,OP_SEE,OP_ALLOT,OP_CREATE // Inclut MOD
 } OpCode;
 
 typedef struct {
@@ -63,6 +63,22 @@ typedef struct {
     long int addr;
 } LoopControl;
 
+typedef enum {
+    MEMORY_VARIABLE,
+    MEMORY_ARRAY
+} MemoryType;
+
+typedef struct {
+    char *name;
+    MemoryType type;  // VARIABLE ou ARRAY
+    mpz_t *values;    // Pointeur vers un tableau de mpz_t
+    long int size;    // Taille (1 pour VARIABLE, n pour ARRAY)
+} Memory;
+
+Memory memory[VAR_SIZE];
+
+long int memory_count = 0;
+
 LoopControl loop_stack[LOOP_STACK_SIZE];
 long int loop_stack_top = -1;
 
@@ -101,8 +117,10 @@ void initStack(Stack *stack) {
         mpz_init(stack->data[i]);
     }
     for (int i = 0; i < VAR_SIZE; i++) {
-        variables[i].name = NULL;
-        mpz_init(variables[i].value);
+        memory[i].name = NULL;
+        memory[i].type = MEMORY_VARIABLE; // Par défaut, mais non utilisé si pas alloué
+        memory[i].values = NULL;
+        memory[i].size = 0;
     }
 }
 
@@ -110,13 +128,18 @@ void clearStack(Stack *stack) {
     for (int i = 0; i < STACK_SIZE; i++) {
         mpz_clear(stack->data[i]);
     }
-    for (int i = 0; i < var_count; i++) {
-        free(variables[i].name);
-        mpz_clear(variables[i].value);
+    for (int i = 0; i < memory_count; i++) {
+        if (memory[i].name) free(memory[i].name);
+        if (memory[i].values) {
+            for (int j = 0; j < memory[i].size; j++) {
+                mpz_clear(memory[i].values[j]);
+            }
+            free(memory[i].values);
+        }
     }
-    var_count = 0;
+    memory_count = 0;
     for (int i = 0; i < dict_count; i++) {
-        free(dictionary[i].name);
+        if (dictionary[i].name) free(dictionary[i].name);
         for (int j = 0; j < dictionary[i].string_count; j++) {
             if (dictionary[i].strings[j]) free(dictionary[i].strings[j]);
         }
@@ -124,6 +147,12 @@ void clearStack(Stack *stack) {
     dict_count = 0;
 }
 
+int findMemoryIndex(char *name) {
+    for (int i = 0; i < memory_count; i++) {
+        if (memory[i].name && strcmp(memory[i].name, name) == 0) return i;
+    }
+    return -1;
+}
 void push(Stack *stack, mpz_t value) {
     if (stack->top < STACK_SIZE - 1) {
         mpz_set(stack->data[++stack->top], value);
@@ -165,6 +194,83 @@ void clear_mpz_pool() {
     }
 }
 
+void print_word_definition(int index, Stack *stack) {
+    if (index < 0 || index >= dict_count) {
+        printf("SEE: Unknown word\n");
+        return;
+    }
+    CompiledWord *word = &dictionary[index];
+    char def_msg[512] = "";
+    snprintf(def_msg, sizeof(def_msg), ": %s ", word->name);
+    for (int i = 0; i < word->code_length; i++) {
+        Instruction instr = word->code[i];
+        char instr_str[64];
+        switch (instr.opcode) {
+            case OP_PUSH:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), "%s ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "%ld ", instr.operand);
+                }
+                break;
+            case OP_ADD: snprintf(instr_str, sizeof(instr_str), "+ "); break;
+            case OP_SUB: snprintf(instr_str, sizeof(instr_str), "- "); break;
+            case OP_MUL: snprintf(instr_str, sizeof(instr_str), "* "); break;
+            case OP_DIV: snprintf(instr_str, sizeof(instr_str), "/ "); break;
+            case OP_MOD: snprintf(instr_str, sizeof(instr_str), "MOD "); break;
+            case OP_DUP: snprintf(instr_str, sizeof(instr_str), "DUP "); break;
+            case OP_SWAP: snprintf(instr_str, sizeof(instr_str), "SWAP "); break;
+            case OP_OVER: snprintf(instr_str, sizeof(instr_str), "OVER "); break;
+            case OP_ROT: snprintf(instr_str, sizeof(instr_str), "ROT "); break;
+            case OP_DROP: snprintf(instr_str, sizeof(instr_str), "DROP "); break;
+            case OP_NIP: snprintf(instr_str, sizeof(instr_str), "NIP "); break;
+            case OP_DOT: snprintf(instr_str, sizeof(instr_str), ". "); break;
+            case OP_DOT_S: snprintf(instr_str, sizeof(instr_str), ".S "); break;
+            case OP_DOT_QUOTE:
+                if (instr.operand < word->string_count) {
+                    snprintf(instr_str, sizeof(instr_str), ".\" %s\" ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), ".\" ???\" ");
+                }
+                break;
+            case OP_CR: snprintf(instr_str, sizeof(instr_str), "CR "); break;
+            case OP_FLUSH: snprintf(instr_str, sizeof(instr_str), "FLUSH "); break;
+            case OP_EQ: snprintf(instr_str, sizeof(instr_str), "= "); break;
+            case OP_LT: snprintf(instr_str, sizeof(instr_str), "< "); break;
+            case OP_GT: snprintf(instr_str, sizeof(instr_str), "> "); break;
+            case OP_AND: snprintf(instr_str, sizeof(instr_str), "AND "); break;
+            case OP_OR: snprintf(instr_str, sizeof(instr_str), "OR "); break;
+            case OP_NOT: snprintf(instr_str, sizeof(instr_str), "NOT "); break;
+            case OP_I: snprintf(instr_str, sizeof(instr_str), "I "); break;
+            case OP_DO: snprintf(instr_str, sizeof(instr_str), "DO "); break;
+            case OP_LOOP: snprintf(instr_str, sizeof(instr_str), "LOOP "); break;
+            case OP_BRANCH_FALSE: snprintf(instr_str, sizeof(instr_str), "IF "); break;
+            case OP_BRANCH: snprintf(instr_str, sizeof(instr_str), "ELSE "); break;
+            case OP_END: snprintf(instr_str, sizeof(instr_str), "; "); break;
+            case OP_CALL:
+                if (instr.operand < dict_count) {
+                    snprintf(instr_str, sizeof(instr_str), "%s ", dictionary[instr.operand].name);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "(CALL %ld) ", instr.operand);
+                }
+                break;
+            case OP_VARIABLE: snprintf(instr_str, sizeof(instr_str), "VARIABLE "); break;
+            case OP_CREATE: snprintf(instr_str, sizeof(instr_str), "CREATE "); break;
+            case OP_ALLOT: snprintf(instr_str, sizeof(instr_str), "ALLOT "); break;
+            case OP_FETCH: snprintf(instr_str, sizeof(instr_str), "@ "); break;
+            case OP_STORE: snprintf(instr_str, sizeof(instr_str), "! "); break;
+            case OP_PICK: snprintf(instr_str, sizeof(instr_str), "PICK "); break;
+            case OP_ROLL: snprintf(instr_str, sizeof(instr_str), "ROLL "); break;
+            case OP_PLUSSTORE: snprintf(instr_str, sizeof(instr_str), "+! "); break;
+            case OP_DEPTH: snprintf(instr_str, sizeof(instr_str), "DEPTH "); break;
+            case OP_TOP: snprintf(instr_str, sizeof(instr_str), "TOP "); break;
+            case OP_SEE: snprintf(instr_str, sizeof(instr_str), "SEE "); break;
+            default: snprintf(instr_str, sizeof(instr_str), "(OP_%d) ", instr.opcode); break;
+        }
+        strncat(def_msg, instr_str, sizeof(def_msg) - strlen(def_msg) - 1);
+    }
+    printf("%s\n", def_msg);
+}
 void exec_arith(Instruction instr, Stack *stack) {
     mpz_t *a = &mpz_pool[0], *b = &mpz_pool[1], *result = &mpz_pool[2];
     switch (instr.opcode) {
@@ -269,6 +375,13 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
             break;
         case OP_DROP:
             pop(stack, *a);
+            break;
+        case OP_NIP:  // Ajout de NIP
+            pop(stack, *a);  // Pop le sommet (y)
+            pop(stack, *b);  // Pop l'élément en dessous (x)
+            if (!error_flag) {
+                push(stack, *a);  // Repousse uniquement le sommet (y)
+            }
             break;
         case OP_DOT:
             pop(stack, *a);
@@ -485,34 +598,118 @@ case OP_FORGET:
         set_error("FORGET: Word index out of range");
     }
     break;
-        case OP_VARIABLE:
-            if (var_count < VAR_SIZE) {
-                variables[var_count].name = strdup(word->strings[instr.operand]);
-                mpz_set_ui(variables[var_count].value, 0);
-                Instruction var_code[1] = {{OP_PUSH, var_count}};
-                char *var_strings[1] = {NULL};
-                addCompiledWord(variables[var_count].name, var_code, 1, var_strings, 0);
-                var_count++;
-            } else {
-                set_error("Variable table full");
-            }
+case OP_VARIABLE:
+    if (memory_count < VAR_SIZE) {
+        memory[memory_count].name = strdup(word->strings[instr.operand]);
+        memory[memory_count].type = MEMORY_VARIABLE;
+        memory[memory_count].size = 1;
+        memory[memory_count].values = malloc(1 * sizeof(mpz_t));
+        if (!memory[memory_count].values) {
+            set_error("VARIABLE: Memory allocation failed");
             break;
-        case OP_FETCH:
-            pop(stack, *a);
-            if (!error_flag && mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) < var_count) {
-                push(stack, variables[mpz_get_si(*a)].value);
+        }
+        mpz_init(memory[memory_count].values[0]);
+        mpz_set_ui(memory[memory_count].values[0], 0);
+        Instruction var_code[1] = {{OP_PUSH, memory_count}};
+        char *var_strings[1] = {NULL};
+        addCompiledWord(memory[memory_count].name, var_code, 1, var_strings, 0);
+        mpz_set_si(*result, memory_count);
+        push(stack, *result);
+        memory_count++;
+    } else {
+        set_error("Memory table full");
+    }
+    break;
+
+case OP_CREATE:
+    if (memory_count < VAR_SIZE) {
+        memory[memory_count].name = strdup(word->strings[instr.operand]);
+        memory[memory_count].type = MEMORY_ARRAY;
+        memory[memory_count].size = 0; // Taille définie par ALLOT
+        memory[memory_count].values = NULL;
+        Instruction var_code[1] = {{OP_PUSH, memory_count}};
+        char *var_strings[1] = {NULL};
+        addCompiledWord(memory[memory_count].name, var_code, 1, var_strings, 0);
+        mpz_set_si(*result, memory_count);
+        push(stack, *result);
+        memory_count++;
+    } else {
+        set_error("Memory table full");
+    }
+    break;
+
+case OP_ALLOT:
+    pop(stack, *a); // Size
+    pop(stack, *b); // Memory index
+    if (!error_flag && mpz_fits_slong_p(*a) && mpz_fits_slong_p(*b)) {
+        long int size = mpz_get_si(*a);
+        int index = mpz_get_si(*b);
+        if (index >= 0 && index < memory_count && memory[index].type == MEMORY_ARRAY) {
+            if (memory[index].values) {
+                for (int i = 0; i < memory[index].size; i++) {
+                    mpz_clear(memory[index].values[i]);
+                }
+                free(memory[index].values);
+            }
+            memory[index].values = malloc(size * sizeof(mpz_t));
+            if (!memory[index].values) {
+                set_error("ALLOT: Memory allocation failed");
+                break;
+            }
+            memory[index].size = size;
+            for (int i = 0; i < size; i++) {
+                mpz_init(memory[index].values[i]);
+                mpz_set_ui(memory[index].values[i], 0);
+            }
+        } else if (!error_flag) {
+            set_error("ALLOT: Invalid memory index or not an array");
+        }
+    } else if (!error_flag) {
+        set_error("ALLOT: Invalid size or memory index");
+    }
+    break;
+
+case OP_FETCH: // @ : [index array -- value] ou [array -- value]
+    pop(stack, *b); // Memory index
+    if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < memory_count) {
+        int idx = mpz_get_si(*b);
+        if (memory[idx].type == MEMORY_VARIABLE) {
+            push(stack, memory[idx].values[0]); // Variable : indice implicite 0
+        } else if (memory[idx].type == MEMORY_ARRAY) {
+            pop(stack, *a); // Index explicite pour tableau
+            if (!error_flag && mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) < memory[idx].size) {
+                push(stack, memory[idx].values[mpz_get_si(*a)]);
             } else if (!error_flag) {
-                set_error("FETCH: Invalid variable index");
+                set_error("FETCH: Index out of bounds for array");
             }
-            break;
-        case OP_STORE:
-            pop(stack, *a); pop(stack, *b);
-            if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < var_count) {
-                mpz_set(variables[mpz_get_si(*b)].value, *a);
+        }
+    } else if (!error_flag) {
+        set_error("FETCH: Invalid memory index");
+    }
+    break;
+
+case OP_STORE: // ! : [value index array -- ] ou [value array -- ]
+    pop(stack, *result); // Memory index
+    if (!error_flag && mpz_fits_slong_p(*result) && mpz_get_si(*result) >= 0 && mpz_get_si(*result) < memory_count) {
+        int idx = mpz_get_si(*result);
+        if (memory[idx].type == MEMORY_VARIABLE) {
+            pop(stack, *a); // Valeur
+            if (!error_flag) {
+                mpz_set(memory[idx].values[0], *a); // Variable : indice implicite 0
+            }
+        } else if (memory[idx].type == MEMORY_ARRAY) {
+            pop(stack, *b); // Index explicite pour tableau
+            pop(stack, *a); // Valeur
+            if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < memory[idx].size) {
+                mpz_set(memory[idx].values[mpz_get_si(*b)], *a);
             } else if (!error_flag) {
-                set_error("STORE: Invalid variable index");
+                set_error("STORE: Index out of bounds for array");
             }
-            break;
+        }
+    } else if (!error_flag) {
+        set_error("STORE: Invalid memory index");
+    }
+    break;
         case OP_PICK:
             pop(stack, *a);
             if (!error_flag) {
@@ -561,6 +758,14 @@ case OP_FORGET:
                 gmp_printf("%Zd\n", stack->data[stack->top]);
             } else {
                 set_error("TOP: Stack underflow");
+            }
+            break;
+case OP_SEE:
+            pop(stack, *a);
+            if (stack->top >= -1 && mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) < dict_count) {
+                print_word_definition(mpz_get_si(*a), stack);
+            } else {
+                printf("SEE: Invalid word index\n");
             }
             break;
     }
@@ -640,6 +845,9 @@ void compileToken(char *token, char **input_rest) {
         currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "DROP") == 0) {
         instr.opcode = OP_DROP;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "NIP") == 0) {  // Ajout de NIP
+        instr.opcode = OP_NIP;
         currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "=") == 0) {
         instr.opcode = OP_EQ;
@@ -853,6 +1061,24 @@ void compileToken(char *token, char **input_rest) {
     } else if (strcmp(token, "TOP") == 0) {
         instr.opcode = OP_TOP;
         currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "SEE") == 0) {
+    char *next_token = strtok_r(NULL, " \t\n", input_rest);
+    if (!next_token) {
+        printf("SEE requires a word name\n");
+        return;
+    }
+    int index = findCompiledWordIndex(next_token);
+    if (index >= 0) {
+        instr.opcode = OP_PUSH;
+        instr.operand = currentWord.string_count;
+        currentWord.strings[currentWord.string_count++] = strdup(next_token);
+        currentWord.code[currentWord.code_length++] = instr;
+        instr.opcode = OP_SEE;
+        instr.operand = 0;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else {
+        printf("SEE: Unknown word: %s\n", next_token);
+    }
     } else {
         long int index = findCompiledWordIndex(token);
         if (index >= 0) {
@@ -1007,6 +1233,10 @@ void interpret(char *input, Stack *stack) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_DROP, 0};
                 executeCompiledWord(&temp, stack);
+            } else if (strcmp(token, "NIP") == 0) {  // Ajout de NIP
+        		temp.code_length = 1;
+        		temp.code[0] = (Instruction){OP_NIP, 0};
+        		executeCompiledWord(&temp, stack);
             } else if (strcmp(token, "=") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_EQ, 0};
@@ -1098,24 +1328,41 @@ void interpret(char *input, Stack *stack) {
                     printf("FORGET: Unknown word: %s\n", next_token);
                 }
             } else if (strcmp(token, "VARIABLE") == 0) {
-                char *next_token = strtok_r(NULL, " \t\n", &saveptr);
-                if (!next_token) {
-                    printf("VARIABLE requires a name\n");
-                    return;
-                }
-                temp.code_length = 1;
-                temp.code[0].opcode = OP_VARIABLE;
-                temp.code[0].operand = temp.string_count;
-                temp.strings[temp.string_count++] = strdup(next_token);
-                executeCompiledWord(&temp, stack);
-            } else if (strcmp(token, "@") == 0) {
-                temp.code_length = 1;
-                temp.code[0] = (Instruction){OP_FETCH, 0};
-                executeCompiledWord(&temp, stack);
-            } else if (strcmp(token, "!") == 0) {
-                temp.code_length = 1;
-                temp.code[0] = (Instruction){OP_STORE, 0};
-                executeCompiledWord(&temp, stack);
+    char *next_token = strtok_r(NULL, " \t\n", &saveptr);
+    if (!next_token) {
+        printf("VARIABLE requires a name\n");
+        mpz_clear(big_value);
+        return;
+    }
+    temp.code_length = 1;
+    temp.code[0].opcode = OP_VARIABLE;
+    temp.code[0].operand = temp.string_count;
+    temp.strings[temp.string_count++] = strdup(next_token);
+    executeCompiledWord(&temp, stack);
+} else if (strcmp(token, "CREATE") == 0) {
+    char *next_token = strtok_r(NULL, " \t\n", &saveptr);
+    if (!next_token) {
+        printf("CREATE requires a name\n");
+        mpz_clear(big_value);
+        return;
+    }
+    temp.code_length = 1;
+    temp.code[0].opcode = OP_CREATE;
+    temp.code[0].operand = temp.string_count;
+    temp.strings[temp.string_count++] = strdup(next_token);
+    executeCompiledWord(&temp, stack);
+} else if (strcmp(token, "ALLOT") == 0) {
+    temp.code_length = 1;
+    temp.code[0] = (Instruction){OP_ALLOT, 0};
+    executeCompiledWord(&temp, stack);
+} else if (strcmp(token, "!") == 0) {
+    temp.code_length = 1;
+    temp.code[0] = (Instruction){OP_STORE, 0};
+    executeCompiledWord(&temp, stack);
+} else if (strcmp(token, "@") == 0) {
+    temp.code_length = 1;
+    temp.code[0] = (Instruction){OP_FETCH, 0};
+    executeCompiledWord(&temp, stack);
             } else if (strcmp(token, "PICK") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_PICK, 0};
@@ -1136,6 +1383,22 @@ void interpret(char *input, Stack *stack) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_TOP, 0};
                 executeCompiledWord(&temp, stack);
+                } else if (strcmp(token, "SEE") == 0) {
+    					char *next_token = strtok_r(NULL, " \t\n", &saveptr);
+    			if (!next_token) {
+        			printf("SEE requires a word name\n");
+        			return;
+   					 }
+    			int index = findCompiledWordIndex(next_token);
+    			if (index >= 0) {
+        			mpz_set_si(big_value, index);
+        			push(stack, big_value);
+        			temp.code_length = 1;
+        			temp.code[0] = (Instruction){OP_SEE, 0};
+        			executeCompiledWord(&temp, stack);
+    			} else {
+        		printf("SEE: Unknown word: %s\n", next_token);
+    			}
             } else {
                 long int index = findCompiledWordIndex(token);
                 if (index >= 0) {
