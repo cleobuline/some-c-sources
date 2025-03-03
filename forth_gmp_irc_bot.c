@@ -16,7 +16,7 @@
 #define MAX_STRING_SIZE 256
 #define MPZ_POOL_SIZE 3
 
-#define BOT_NAME "ForthBot"
+#define BOT_NAME "forth"
 #define CHANNEL "#labynet"
 
 typedef enum {
@@ -511,7 +511,7 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
         case OP_DOT:
             if (stack->top >= 0) {
                 pop(stack, *a);
-                char dot_msg[256];
+                char dot_msg[512];
                 gmp_snprintf(dot_msg, sizeof(dot_msg), "%Zd", *a);
                 send_to_channel(dot_msg);
             } else {
@@ -858,7 +858,7 @@ case OP_FETCH:
             }
             break;
 case OP_STORE:
-    pop(stack, *result); // Index mémoire (ex. ZAZA, sommet de la pile)
+    pop(stack, *result); // Index mémoire (ex. TEST, sommet de la pile)
     if (!error_flag && mpz_fits_slong_p(*result) && mpz_get_si(*result) >= 0 && mpz_get_si(*result) < memory_count) {
         int idx = mpz_get_si(*result);
         if (memory[idx].type == MEMORY_VARIABLE) {
@@ -879,15 +879,20 @@ case OP_STORE:
                 }
             }
         } else if (memory[idx].type == MEMORY_STRING) {
-            // Cas chaîne : 2 éléments, index chaîne puis index mémoire
-            pop(stack, *a); // Index de la chaîne dans word->strings (ex. 0 pour une chaîne)
+            // Cas chaîne : "A string" TEST !
+            pop(stack, *a); // Index de la chaîne dans string_stack
             if (!error_flag && mpz_fits_slong_p(*a) && 
-                mpz_get_si(*a) >= 0 && mpz_get_si(*a) < word->string_count &&
-                word->strings[mpz_get_si(*a)]) {
-                if (memory[idx].string) free(memory[idx].string);
-                memory[idx].string = strdup(word->strings[mpz_get_si(*a)]);
+                mpz_get_si(*a) >= 0 && mpz_get_si(*a) <= string_stack_top) {
+                char *str = string_stack[mpz_get_si(*a)];
+                if (str) {
+                    if (memory[idx].string) free(memory[idx].string);
+                    memory[idx].string = strdup(str);
+                    string_stack_top--; // Retire la chaîne de string_stack après stockage
+                } else {
+                    set_error("STORE: No string at stack index");
+                }
             } else if (!error_flag) {
-                set_error("STORE: Invalid string index");
+                set_error("STORE: Invalid string stack index");
             }
         } else {
             set_error("STORE: Unknown memory type");
@@ -1014,7 +1019,7 @@ case OP_EMIT:
             break;
         case OP_TOP:
             if (stack->top >= 0) {
-                char top_msg[256];
+                char top_msg[512];
                 gmp_snprintf(top_msg, sizeof(top_msg), "%Zd", stack->data[stack->top]);
                 send_to_channel(top_msg);
             } else {
