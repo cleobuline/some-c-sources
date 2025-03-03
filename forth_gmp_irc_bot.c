@@ -9,15 +9,15 @@
 
 #define STACK_SIZE 1000
 #define DICT_SIZE 100
-#define WORD_CODE_SIZE 256
+#define WORD_CODE_SIZE 512
 #define CONTROL_STACK_SIZE 100
-#define LOOP_STACK_SIZE 100
+#define LOOP_STACK_SIZE 500
 #define VAR_SIZE 100
 #define MAX_STRING_SIZE 256
 #define MPZ_POOL_SIZE 3
 
 #define BOT_NAME "forth"
-#define CHANNEL "#labynet"
+#define CHANNEL "#test"
 
 typedef enum {
     OP_PUSH, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_DUP, OP_SWAP, OP_OVER,
@@ -192,7 +192,7 @@ int findMemoryIndex(char *name) {
     return -1;
 }
 void set_error(const char *msg) {
-    char err_msg[256];
+    char err_msg[512];
     snprintf(err_msg, sizeof(err_msg), "Error: %s", msg);
     send_to_channel(err_msg);
     error_flag = 1;
@@ -429,15 +429,38 @@ void print_word_definition_irc(int index, Stack *stack) {
 void send_to_channel(const char *msg) {
     if (irc_socket != -1) {
         char response[512];
-        snprintf(response, sizeof(response), "PRIVMSG %s :%s\r\n", CHANNEL, msg);
-        if (send(irc_socket, response, strlen(response), 0) < 0) {
-            printf("Failed to send to channel: %s\n", msg);
+        size_t msg_len = strlen(msg);
+        size_t chunk_size = 400;
+        size_t offset = 0;
+
+        while (offset < msg_len) {
+            size_t remaining = msg_len - offset;
+            size_t current_chunk_size = (remaining > chunk_size) ? chunk_size : remaining;
+            // Si présence d'espaces, couper au dernier espace avant chunk_size
+            if (current_chunk_size < remaining && strchr(msg + offset, ' ') != NULL) {
+                for (size_t i = current_chunk_size; i > 0; i--) {
+                    if (msg[offset + i] == ' ') {
+                        current_chunk_size = i;
+                        break;
+                    }
+                }
+            }
+            char chunk[401];
+            strncpy(chunk, msg + offset, current_chunk_size);
+            chunk[current_chunk_size] = '\0';
+            snprintf(response, sizeof(response), "PRIVMSG %s :%s\r\n", CHANNEL, chunk);
+            if (send(irc_socket, response, strlen(response), 0) < 0) {
+                printf("Failed to send to channel: %s\n", chunk);
+                break;
+            }
+            offset += current_chunk_size;
+            // Passe les espaces uniquement si on en a trouvé
+            while (offset < msg_len && msg[offset] == ' ') offset++;
         }
     } else {
         printf("IRC socket not initialized\n");
     }
 }
-
 void buffer_char(char c) {
     if (emit_buffer_pos < sizeof(emit_buffer) - 1) {
         emit_buffer[emit_buffer_pos++] = c;
@@ -508,19 +531,23 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 push(stack, *a);
             }
             break;
-        case OP_DOT:
-            if (stack->top >= 0) {
-                pop(stack, *a);
-                char dot_msg[512];
-                gmp_snprintf(dot_msg, sizeof(dot_msg), "%Zd", *a);
-                send_to_channel(dot_msg);
-            } else {
-                send_to_channel("Stack empty");
-            }
-            break;
+case OP_DOT:
+    if (stack->top >= 0) {
+        pop(stack, *a);
+        char dot_msg[1024] = {0}; // Zéro pour éviter résidus
+        int written = gmp_snprintf(dot_msg, sizeof(dot_msg), "%Zd", *a);
+        if (written < 0 || written >= sizeof(dot_msg)) {
+            send_to_channel("<overflow>");
+        } else {
+            send_to_channel(dot_msg); // Chunking géré par send_to_channel
+        }
+    } else {
+        send_to_channel("Stack empty");
+    }
+    break;
         case OP_DOT_S:
             if (stack->top >= 0) {
-                char stack_msg[512] = "Stack: ";
+                char stack_msg[1024] = "Stack: ";
                 for (int i = 0; i <= stack->top; i++) {
                     char num[64];
                     gmp_snprintf(num, sizeof(num), "%Zd ", stack->data[i]);
@@ -1062,6 +1089,9 @@ void executeCompiledWord(CompiledWord *word, Stack *stack, int word_index) {
         executeInstruction(word->code[ip], stack, &ip, word, word_index);
         ip++;
     }
+    if (error_flag) {
+        send_to_channel("Execution aborted due to error");
+    }
 }
 
 void addCompiledWord(char *name, Instruction *code, long int code_length, char **strings, long int string_count) {
@@ -1341,7 +1371,7 @@ void compileToken(char *token, char **input_rest, int *compile_error) {
         instr.operand = index;
         currentWord.code[currentWord.code_length++] = instr;
     } else {
-        char msg[256];
+        char msg[512];
         snprintf(msg, sizeof(msg), "SEE: Unknown word: %s", next_token);
         send_to_channel(msg);
         *compile_error = 1;
@@ -1371,7 +1401,7 @@ void compileToken(char *token, char **input_rest, int *compile_error) {
                 currentWord.strings[currentWord.string_count++] = strdup(token);
                 currentWord.code[currentWord.code_length++] = instr;
             } else {
-                char msg[256];
+                char msg[512];
                 snprintf(msg, sizeof(msg), "Unknown word: %s", token);
                 send_to_channel(msg);
                 *compile_error = 1;
@@ -1390,7 +1420,7 @@ void interpret(char *input, Stack *stack) {
         if (compiling) {
             if (strcmp(token, ";") == 0) {
                 if (currentWord.code_length >= WORD_CODE_SIZE - 1) {
-                    char msg[256];
+                    char msg[512];
                     snprintf(msg, sizeof(msg), "Definition failed for %s: code length exceeds %d", currentWord.name, WORD_CODE_SIZE);
                     send_to_channel(msg);
                     compile_error = 1;
@@ -1406,18 +1436,18 @@ void interpret(char *input, Stack *stack) {
                         CompiledWord temp = {.code_length = 1, .string_count = 0};
                         temp.code[0] = forget_instr;
                         executeCompiledWord(&temp, stack, -1);
-                        char msg[256];
+                        char msg[512];
                         snprintf(msg, sizeof(msg), "Definition aborted due to error, %s forgotten", currentWord.name);
                         send_to_channel(msg);
                     } else {
-                        char msg[256];
+                        char msg[512];
                         snprintf(msg, sizeof(msg), "Definition failed for %s: compilation error", currentWord.name);
                         send_to_channel(msg);
                     }
                 } else {
                     addCompiledWord(currentWord.name, currentWord.code, currentWord.code_length, 
                                     currentWord.strings, currentWord.string_count);
-                    // char msg[256];
+                    // char msg[512];
                     // snprintf(msg, sizeof(msg), "Defined: %s", currentWord.name);
                     // send_to_channel(msg);
                 }
@@ -1654,7 +1684,7 @@ void interpret(char *input, Stack *stack) {
                     temp.code[0] = (Instruction){OP_FORGET, index};
                     executeCompiledWord(&temp, stack, -1);
                 } else {
-                    char msg[256];
+                    char msg[512];
                     snprintf(msg, sizeof(msg), "FORGET: Unknown word: %s", next_token);
                     send_to_channel(msg);
                 }
@@ -1743,7 +1773,7 @@ else if (strcmp(token, "STRING") == 0) {
                     temp.code[0] = (Instruction){OP_SEE, 0};
                     executeCompiledWord(&temp, stack, -1);
                 } else {
-                    char msg[256];
+                    char msg[512];
                     snprintf(msg, sizeof(msg), "SEE: Unknown word: %s", next_token);
                     send_to_channel(msg);
                 }
@@ -1782,7 +1812,7 @@ else if (strcmp(token, "STRING") == 0) {
                     temp.code[0] = (Instruction){OP_CALL, index};
                     executeCompiledWord(&temp, stack, index);
                 } else {
-                    char msg[256];
+                    char msg[512];
                     snprintf(msg, sizeof(msg), "Unknown word: %s", token);
                     send_to_channel(msg);
                 }
