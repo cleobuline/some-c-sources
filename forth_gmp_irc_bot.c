@@ -17,7 +17,7 @@
 #define MPZ_POOL_SIZE 3
 
 #define BOT_NAME "ForthBot"
-#define CHANNEL "##forth"
+#define CHANNEL "#labynet"
 
 typedef enum {
     OP_PUSH, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_DUP, OP_SWAP, OP_OVER,
@@ -28,9 +28,9 @@ typedef enum {
     OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_BIT_NOT, OP_LSHIFT, OP_RSHIFT,
     OP_WORDS, OP_FORGET, OP_VARIABLE, OP_FETCH, OP_STORE,
     OP_PICK, OP_ROLL, OP_PLUSSTORE, OP_DEPTH, OP_TOP, OP_NIP, OP_MOD,
-    OP_CREATE, OP_ALLOT, OP_SEE, OP_RECURSE ,OP_IRC_CONNECT,OP_IRC_SEND  // Ajout de RECURSE
+    OP_CREATE, OP_ALLOT, OP_SEE, OP_RECURSE, OP_IRC_CONNECT, OP_IRC_SEND,OP_EMIT, 
+    OP_STRING, OP_QUOTE, OP_PRINT ,OP_STORE_STRING // Nouveaux opcodes pour chaînes
 } OpCode;
-
 typedef struct {
     OpCode opcode;
     long int operand;
@@ -72,15 +72,20 @@ typedef struct {
 
 typedef enum {
     MEMORY_VARIABLE,
-    MEMORY_ARRAY
+    MEMORY_ARRAY,
+    MEMORY_STRING  // Nouveau type pour les chaînes
 } MemoryType;
 
 typedef struct {
     char *name;
     MemoryType type;
-    mpz_t *values;
-    long int size;
+    mpz_t *values;      // Pour MEMORY_VARIABLE et MEMORY_ARRAY
+    char *string;       // Pour MEMORY_STRING
+    long int size;      // Pour MEMORY_ARRAY, ignoré pour MEMORY_STRING
 } Memory;
+
+char *string_stack[STACK_SIZE];
+int string_stack_top = -1;
 
 Memory memory[VAR_SIZE];
 long int memory_count = 0;
@@ -101,6 +106,8 @@ long int current_word_index = -1;
 int error_flag = 0;
 mpz_t mpz_pool[MPZ_POOL_SIZE];
 static int irc_socket = -1;
+char emit_buffer[512] = "";
+int emit_buffer_pos = 0;
 
 void initStack(Stack *stack);
 void clearStack(Stack *stack);
@@ -131,21 +138,42 @@ void initStack(Stack *stack) {
         memory[i].name = NULL;
         memory[i].type = MEMORY_VARIABLE;
         memory[i].values = NULL;
+        memory[i].string = NULL;  // Initialisé à NULL pour MEMORY_STRING
         memory[i].size = 0;
     }
 }
 
+void push_string(char *str) {
+    if (string_stack_top < STACK_SIZE - 1) {
+        string_stack[++string_stack_top] = str;
+    } else {
+        set_error("String stack overflow");
+    }
+}
+
+char *pop_string() {
+    if (string_stack_top >= 0) {
+        return string_stack[string_stack_top--];
+    } else {
+        set_error("String stack underflow");
+        return NULL;
+    }
+}
 void clearStack(Stack *stack) {
     for (int i = 0; i < STACK_SIZE; i++) {
         mpz_clear(stack->data[i]);
     }
     for (int i = 0; i < memory_count; i++) {
         if (memory[i].name) free(memory[i].name);
-        if (memory[i].values) {
-            for (int j = 0; j < memory[i].size; j++) {
-                mpz_clear(memory[i].values[j]);
+        if (memory[i].type == MEMORY_VARIABLE || memory[i].type == MEMORY_ARRAY) {
+            if (memory[i].values) {
+                for (int j = 0; j < memory[i].size; j++) {
+                    mpz_clear(memory[i].values[j]);
+                }
+                free(memory[i].values);
             }
-            free(memory[i].values);
+        } else if (memory[i].type == MEMORY_STRING) {
+            if (memory[i].string) free(memory[i].string);
         }
     }
     memory_count = 0;
@@ -157,14 +185,18 @@ void clearStack(Stack *stack) {
     }
     dict_count = 0;
 }
-
 int findMemoryIndex(char *name) {
     for (int i = 0; i < memory_count; i++) {
         if (memory[i].name && strcmp(memory[i].name, name) == 0) return i;
     }
     return -1;
 }
-
+void set_error(const char *msg) {
+    char err_msg[256];
+    snprintf(err_msg, sizeof(err_msg), "Error: %s", msg);
+    send_to_channel(err_msg);
+    error_flag = 1;
+}
 void push(Stack *stack, mpz_t value) {
     if (stack->top < STACK_SIZE - 1) {
         mpz_set(stack->data[++stack->top], value);
@@ -196,12 +228,7 @@ int findCompiledWordIndex(char *name) {
     return -1;
 }
 
-void set_error(const char *msg) {
-    char err_msg[256];
-    snprintf(err_msg, sizeof(err_msg), "Error: %s", msg);
-    send_to_channel(err_msg);
-    error_flag = 1;
-}
+
 
 void init_mpz_pool() {
     for (int i = 0; i < MPZ_POOL_SIZE; i++) {
@@ -272,8 +299,10 @@ void print_word_definition_irc(int index, Stack *stack) {
     CompiledWord *word = &dictionary[index];
     char def_msg[512] = "";
     snprintf(def_msg, sizeof(def_msg), ": %s ", word->name);
-    int if_depth = 0; // Compteur pour les IF ouverts
-    int else_depth = 0; // Compteur pour les ELSE ouverts
+
+    long int branch_targets[WORD_CODE_SIZE];
+    int branch_depth = 0;
+    int has_semicolon = 0;
 
     for (int i = 0; i < word->code_length; i++) {
         Instruction instr = word->code[i];
@@ -320,24 +349,25 @@ void print_word_definition_irc(int index, Stack *stack) {
             case OP_LOOP: snprintf(instr_str, sizeof(instr_str), "LOOP "); break;
             case OP_BRANCH_FALSE:
                 snprintf(instr_str, sizeof(instr_str), "IF ");
-                if_depth++;
+                branch_targets[branch_depth++] = instr.operand;
                 break;
             case OP_BRANCH:
-                if (if_depth > 0) {
+                if (branch_depth > 0) {
                     snprintf(instr_str, sizeof(instr_str), "ELSE ");
-                    else_depth++;
+                    branch_targets[branch_depth - 1] = instr.operand;
                 }
                 break;
             case OP_END:
-                if (if_depth > 0 && else_depth > 0) {
-                    snprintf(instr_str, sizeof(instr_str), "THEN ; ");
-                    if_depth--;
-                    else_depth--;
-                } else if (if_depth > 0) {
-                    snprintf(instr_str, sizeof(instr_str), "THEN ; ");
-                    if_depth--;
-                } else {
+                if (branch_depth > 0 && i + 1 == branch_targets[branch_depth - 1]) {
+                    snprintf(instr_str, sizeof(instr_str), "THEN ");
+                    branch_depth--;
+                    if (i + 1 == word->code_length) {
+                        strncat(instr_str, ";", sizeof(instr_str) - strlen(instr_str) - 1);
+                        has_semicolon = 1;
+                    }
+                } else if (i + 1 == word->code_length) {
                     snprintf(instr_str, sizeof(instr_str), "; ");
+                    has_semicolon = 1;
                 }
                 break;
             case OP_CALL:
@@ -360,23 +390,61 @@ void print_word_definition_irc(int index, Stack *stack) {
             case OP_SEE: snprintf(instr_str, sizeof(instr_str), "SEE "); break;
             case OP_EXIT: snprintf(instr_str, sizeof(instr_str), "EXIT "); break;
             case OP_RECURSE: snprintf(instr_str, sizeof(instr_str), "RECURSE "); break;
+            case OP_BEGIN: snprintf(instr_str, sizeof(instr_str), "BEGIN "); break;
+            case OP_EMIT: snprintf(instr_str, sizeof(instr_str), "EMIT "); break;
+            case OP_WHILE: 
+                snprintf(instr_str, sizeof(instr_str), "WHILE ");
+                branch_targets[branch_depth++] = instr.operand; // Sauvegarde la cible pour REPEAT
+                break;
+            case OP_REPEAT:
+                snprintf(instr_str, sizeof(instr_str), "REPEAT ");
+                if (branch_depth > 0) branch_depth--; // Ferme le WHILE
+                break;
+            case OP_CASE: snprintf(instr_str, sizeof(instr_str), "CASE "); break;
+            case OP_OF: 
+                snprintf(instr_str, sizeof(instr_str), "OF ");
+                branch_targets[branch_depth++] = instr.operand; // Sauvegarde la cible pour ENDOF
+                break;
+            case OP_ENDOF:
+                snprintf(instr_str, sizeof(instr_str), "ENDOF ");
+                if (branch_depth > 0) branch_depth--; // Ferme l’OF
+                break;
+            case OP_ENDCASE: snprintf(instr_str, sizeof(instr_str), "ENDCASE "); break;
             default: snprintf(instr_str, sizeof(instr_str), "(OP_%d) ", instr.opcode); break;
         }
 
         strncat(def_msg, instr_str, sizeof(def_msg) - strlen(def_msg) - 1);
 
-        // Insère THEN uniquement avant OP_END si IF ou ELSE est ouvert
-        if (i + 1 < word->code_length && word->code[i + 1].opcode == OP_END && if_depth > 0) {
-            for (int j = 0; j < i; j++) {
-                if ((word->code[j].opcode == OP_BRANCH_FALSE || word->code[j].opcode == OP_BRANCH) &&
-                    word->code[j].operand == i + 2) {
-                    strncat(def_msg, "THEN ", sizeof(def_msg) - strlen(def_msg) - 1);
-                    break;
-                }
-            }
+        if (branch_depth > 0 && i + 1 == branch_targets[branch_depth - 1] && instr.opcode != OP_END && instr.opcode != OP_REPEAT && instr.opcode != OP_ENDOF) {
+            strncat(def_msg, "THEN ", sizeof(def_msg) - strlen(def_msg) - 1);
+            branch_depth--;
         }
     }
+
+    if (!has_semicolon) {
+        strncat(def_msg, ";", sizeof(def_msg) - strlen(def_msg) - 1);
+    }
     send_to_channel(def_msg);
+}
+void send_to_channel(const char *msg) {
+    if (irc_socket != -1) {
+        char response[512];
+        snprintf(response, sizeof(response), "PRIVMSG %s :%s\r\n", CHANNEL, msg);
+        if (send(irc_socket, response, strlen(response), 0) < 0) {
+            printf("Failed to send to channel: %s\n", msg);
+        }
+    } else {
+        printf("IRC socket not initialized\n");
+    }
+}
+
+void buffer_char(char c) {
+    if (emit_buffer_pos < sizeof(emit_buffer) - 1) {
+        emit_buffer[emit_buffer_pos++] = c;
+        emit_buffer[emit_buffer_pos] = '\0'; // Terminateur
+    } else {
+        set_error("EMIT: Buffer full");
+    }
 }
 void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledWord *word, int word_index) {
     if (error_flag) return;
@@ -463,16 +531,22 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 send_to_channel("Stack empty");
             }
             break;
-        case OP_DOT_QUOTE:
+case OP_DOT_QUOTE:
             if (instr.operand >= 0 && instr.operand < word->string_count) {
                 send_to_channel(word->strings[instr.operand]);
             } else {
                 send_to_channel("Invalid string index for .\"");
             }
             break;
-        case OP_CR:
-            send_to_channel(""); // Nouvelle ligne simulée
-            break;
+case OP_CR:
+    if (emit_buffer_pos > 0) {
+        send_to_channel(emit_buffer);
+        emit_buffer[0] = '\0'; // Réinitialise le buffer
+        emit_buffer_pos = 0;
+    } else {
+        send_to_channel(""); // Envoie une ligne vide si rien dans le buffer
+    }
+    break;
         case OP_FLUSH:
             stack->top = -1;
             break;
@@ -651,28 +725,31 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 push(stack, *result);
             }
             break;
-        case OP_WORDS:
-            if (dict_count > 0) {
-                char words_msg[512] = "";
-                size_t remaining = sizeof(words_msg) - 1;
-                for (int i = 0; i < dict_count && remaining > 1; i++) {
-                    if (dictionary[i].name) {
-                        size_t name_len = strlen(dictionary[i].name);
-                        if (name_len + 1 < remaining) {
-                            strncat(words_msg, dictionary[i].name, remaining);
-                            strncat(words_msg, " ", remaining - name_len);
-                            remaining -= (name_len + 1);
-                        } else {
-                            send_to_channel("WORDS truncated: buffer full");
-                            break;
-                        }
-                    }
+case OP_WORDS:
+    if (dict_count > 0) {
+        char words_msg[512] = "";
+        size_t remaining = sizeof(words_msg) - 1;
+        for (int i = 0; i < dict_count && remaining > 1; i++) {
+            if (dictionary[i].name) {
+                size_t name_len = strlen(dictionary[i].name);
+                if (name_len + 1 < remaining) {
+                    strncat(words_msg, dictionary[i].name, remaining);
+                    strncat(words_msg, " ", remaining - name_len);
+                    remaining -= (name_len + 1);
+                } else {
+                    send_to_channel("WORDS truncated: buffer full");
+                    break;
                 }
-                send_to_channel(words_msg);
             } else {
-                send_to_channel("Dictionary empty");
+                set_error("WORDS: Null name in dictionary");
+                break;
             }
-            break;
+        }
+        send_to_channel(words_msg);
+    } else {
+        send_to_channel("Dictionary empty");
+    }
+    break;
         case OP_FORGET:
             if (instr.operand >= 0 && instr.operand < dict_count) {
                 for (int i = instr.operand; i < dict_count; i++) {
@@ -760,8 +837,8 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 set_error("ALLOT: Invalid size or memory index");
             }
             break;
-        case OP_FETCH:
-            pop(stack, *b);
+case OP_FETCH:
+            pop(stack, *b); // Index de la mémoire (ex. GREET)
             if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < memory_count) {
                 int idx = mpz_get_si(*b);
                 if (memory[idx].type == MEMORY_VARIABLE) {
@@ -773,41 +850,126 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                     } else if (!error_flag) {
                         set_error("FETCH: Index out of bounds for array");
                     }
+                } else if (memory[idx].type == MEMORY_STRING) {
+                    push(stack, *b); // Pousse l’index de la mémoire sur la pile
                 }
             } else if (!error_flag) {
                 set_error("FETCH: Invalid memory index");
             }
             break;
-        case OP_STORE:
-            pop(stack, *result);
-            if (!error_flag && mpz_fits_slong_p(*result) && mpz_get_si(*result) >= 0 && mpz_get_si(*result) < memory_count) {
-                int idx = mpz_get_si(*result);
-                if (memory[idx].type == MEMORY_VARIABLE) {
-                    pop(stack, *a);
-                    if (!error_flag) {
-                        mpz_set(memory[idx].values[0], *a);
-                    }
-                } else if (memory[idx].type == MEMORY_ARRAY) {
-                    pop(stack, *b);
-                    pop(stack, *a);
-                    if (!error_flag && mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < memory[idx].size) {
-                        mpz_set(memory[idx].values[mpz_get_si(*b)], *a);
-                    } else if (!error_flag) {
-                        set_error("STORE: Index out of bounds for array");
-                    }
+case OP_STORE:
+    pop(stack, *result); // Index mémoire (ex. ZAZA, sommet de la pile)
+    if (!error_flag && mpz_fits_slong_p(*result) && mpz_get_si(*result) >= 0 && mpz_get_si(*result) < memory_count) {
+        int idx = mpz_get_si(*result);
+        if (memory[idx].type == MEMORY_VARIABLE) {
+            // Cas variable simple : 12345 ZAZA !
+            pop(stack, *a); // Valeur (ex. 12345)
+            if (!error_flag) {
+                mpz_set(memory[idx].values[0], *a); // Stocke la valeur dans la variable
+            }
+        } else if (memory[idx].type == MEMORY_ARRAY) {
+            // Cas tableau : 12345 5 ZAZA !
+            pop(stack, *b); // Index dans le tableau (ex. 5)
+            pop(stack, *a); // Valeur (ex. 12345)
+            if (!error_flag) {
+                if (mpz_fits_slong_p(*b) && mpz_get_si(*b) >= 0 && mpz_get_si(*b) < memory[idx].size) {
+                    mpz_set(memory[idx].values[mpz_get_si(*b)], *a); // Stocke la valeur à l’index du tableau
+                } else {
+                    set_error("STORE: Index out of bounds for array");
+                }
+            }
+        } else if (memory[idx].type == MEMORY_STRING) {
+            // Cas chaîne : 2 éléments, index chaîne puis index mémoire
+            pop(stack, *a); // Index de la chaîne dans word->strings (ex. 0 pour une chaîne)
+            if (!error_flag && mpz_fits_slong_p(*a) && 
+                mpz_get_si(*a) >= 0 && mpz_get_si(*a) < word->string_count &&
+                word->strings[mpz_get_si(*a)]) {
+                if (memory[idx].string) free(memory[idx].string);
+                memory[idx].string = strdup(word->strings[mpz_get_si(*a)]);
+            } else if (!error_flag) {
+                set_error("STORE: Invalid string index");
+            }
+        } else {
+            set_error("STORE: Unknown memory type");
+        }
+    } else if (!error_flag) {
+        set_error("STORE: Invalid memory index");
+    }
+    break;
+case OP_STRING:
+            if (memory_count < VAR_SIZE) {
+                memory[memory_count].name = strdup(word->strings[instr.operand]);
+                memory[memory_count].type = MEMORY_STRING;
+                memory[memory_count].string = strdup("");
+                memory[memory_count].values = NULL;
+                memory[memory_count].size = 0;
+                Instruction var_code[1] = {{OP_PUSH, memory_count}};
+                char *var_strings[1] = {NULL};
+                addCompiledWord(memory[memory_count].name, var_code, 1, var_strings, 0);
+                mpz_set_si(*result, memory_count);
+                push(stack, *result);
+                memory_count++;
+            } else {
+                set_error("Memory table full");
+            }
+            break;
+case OP_PRINT:
+            pop(stack, *a); // Index de la mémoire (ex. GREET)
+            if (!error_flag && mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) < memory_count) {
+                int idx = mpz_get_si(*a);
+                if (memory[idx].type == MEMORY_STRING && memory[idx].string) {
+                    send_to_channel(memory[idx].string);
+                } else {
+                    set_error("PRINT: Not a string or empty");
                 }
             } else if (!error_flag) {
-                set_error("STORE: Invalid memory index");
+                set_error("PRINT: Invalid memory index");
             }
             break;
-        case OP_SEE:
-            pop(stack, *a);
-            if (stack->top >= -1 && mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) < dict_count) {
-                print_word_definition_irc(mpz_get_si(*a), stack);
+case OP_STORE_STRING:
+    pop(stack, *a); // Index dans string_stack
+    pop(stack, *result); // Index de la mémoire (ex. toto)
+    if (!error_flag && mpz_fits_slong_p(*result) && mpz_get_si(*result) >= 0 && mpz_get_si(*result) < memory_count) {
+        int idx = mpz_get_si(*result);
+        if (memory[idx].type == MEMORY_STRING) {
+            if (mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) <= string_stack_top) {
+                char *str = pop_string();
+                if (str) {
+                    if (memory[idx].string) free(memory[idx].string);
+                    memory[idx].string = strdup(str);
+                } else {
+                    set_error("S!: No string to store");
+                }
             } else {
-                send_to_channel("SEE: Invalid word index");
+                set_error("S!: Invalid string stack index");
             }
-            break;
+        } else {
+            set_error("S!: Not a string variable");
+        }
+    } else if (!error_flag) {
+        set_error("S!: Invalid memory index");
+    }
+    break;
+case OP_QUOTE:
+    if (instr.operand >= 0 && instr.operand < word->string_count && word->strings[instr.operand]) {
+        push_string(word->strings[instr.operand]);
+        mpz_set_si(*result, string_stack_top);
+        push(stack, *result);
+    } else {
+        set_error("QUOTE: Invalid string index");
+    }
+    break;
+case OP_EMIT:
+    pop(stack, *a);
+    if (!error_flag) {
+        long val = mpz_get_si(*a);
+        if (val >= 0 && val <= 255) { // Vérification ASCII
+            buffer_char((char)val);
+        } else {
+            set_error("EMIT: Value out of ASCII range");
+        }
+    }
+    break;
         case OP_PICK:
             pop(stack, *a);
             if (!error_flag) {
@@ -873,6 +1035,19 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
                 set_error("RECURSE called with invalid word index");
             }
             break;
+case OP_SEE:
+    if (compiling || word_index >= 0) { // Mode compilé ou dans une définition
+        print_word_definition_irc(instr.operand, stack);
+    } else { // Mode immédiat
+        pop(stack, *a);
+        if (!error_flag && mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) < dict_count) {
+            print_word_definition_irc(mpz_get_si(*a), stack);
+        } else if (!error_flag) {
+            set_error("SEE: Invalid word index");
+        }
+    }
+    break;
+
     }
 }
 
@@ -893,29 +1068,36 @@ void addCompiledWord(char *name, Instruction *code, long int code_length, char *
             if (word->strings[i]) free(word->strings[i]);
         }
         word->name = strdup(name);
-        memcpy(word->code, code, code_length * sizeof(Instruction));
-        word->code_length = code_length;
-        word->string_count = string_count;
-        for (int i = 0; i < string_count; i++) {
-            word->strings[i] = strings[i] ? strdup(strings[i]) : NULL;
+        if (code_length <= WORD_CODE_SIZE) {
+            memcpy(word->code, code, code_length * sizeof(Instruction));
+            word->code_length = code_length;
+            word->string_count = string_count;
+            for (int i = 0; i < string_count; i++) {
+                word->strings[i] = strings[i] ? strdup(strings[i]) : NULL;
+            }
+        } else {
+            set_error("addCompiledWord: Code length exceeds limit");
         }
     } else if (dict_count < DICT_SIZE) {
         dictionary[dict_count].name = strdup(name);
-        memcpy(dictionary[dict_count].code, code, code_length * sizeof(Instruction));
-        dictionary[dict_count].code_length = code_length;
-        dictionary[dict_count].string_count = string_count;
-        for (int i = 0; i < string_count; i++) {
-            dictionary[dict_count].strings[i] = strings[i] ? strdup(strings[i]) : NULL;
-        }
-        dict_count++;
-        if (findMemoryIndex("DP") >= 0) {
-            mpz_set_si(memory[findMemoryIndex("DP")].values[0], dict_count);
+        if (code_length <= WORD_CODE_SIZE) {
+            memcpy(dictionary[dict_count].code, code, code_length * sizeof(Instruction));
+            dictionary[dict_count].code_length = code_length;
+            dictionary[dict_count].string_count = string_count;
+            for (int i = 0; i < string_count; i++) {
+                dictionary[dict_count].strings[i] = strings[i] ? strdup(strings[i]) : NULL;
+            }
+            dict_count++;
+            if (findMemoryIndex("DP") >= 0) {
+                mpz_set_si(memory[findMemoryIndex("DP")].values[0], dict_count);
+            }
+        } else {
+            set_error("addCompiledWord: Code length exceeds limit");
         }
     } else {
         set_error("Dictionary full");
     }
 }
-
 void compileToken(char *token, char **input_rest, int *compile_error) {
     Instruction instr = {0};
     if (strcmp(token, "+") == 0) {
@@ -1054,6 +1236,55 @@ void compileToken(char *token, char **input_rest, int *compile_error) {
         currentWord.code[currentWord.code_length++] = instr;
         *input_rest = end + 1;
         return;
+    } else if (strcmp(token, "STRING") == 0) {
+        char *next_token = strtok_r(NULL, " \t\n", input_rest);
+        if (!next_token) {
+            send_to_channel("STRING requires a name");
+            return;
+        }
+        instr.opcode = OP_STRING;
+        instr.operand = currentWord.string_count;
+        currentWord.strings[currentWord.string_count++] = strdup(next_token);
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "EMIT") == 0) {
+        instr.opcode = OP_EMIT;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "PRINT") == 0) {
+        instr.opcode = OP_PRINT;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "S!") == 0) {
+        instr.opcode = OP_STORE_STRING;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "PICK") == 0) { // Déjà ajouté
+        instr.opcode = OP_PICK;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "RECURSE") == 0) { // Déjà ajouté
+        instr.opcode = OP_RECURSE;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "BEGIN") == 0) {
+        instr.opcode = OP_BEGIN;
+        currentWord.code[currentWord.code_length++] = instr;
+        control_stack[control_stack_top++] = (ControlEntry){CT_DO, currentWord.code_length - 1};
+    } else if (strcmp(token, "WHILE") == 0) {
+        instr.opcode = OP_WHILE;
+        instr.operand = 0;
+        currentWord.code[currentWord.code_length++] = instr;
+        control_stack[control_stack_top++] = (ControlEntry){CT_DO, currentWord.code_length - 1};
+    } else if (strcmp(token, "REPEAT") == 0) {
+        if (control_stack_top > 0 && control_stack[control_stack_top-1].type == CT_DO) {
+            instr.opcode = OP_REPEAT;
+            currentWord.code[currentWord.code_length++] = instr;
+            int begin_addr = control_stack[control_stack_top-1].addr;
+            currentWord.code[currentWord.code_length-1].operand = begin_addr;
+            instr.opcode = OP_BRANCH;
+            instr.operand = currentWord.code_length;
+            currentWord.code[control_stack[control_stack_top-2].addr].operand = currentWord.code_length;
+            currentWord.code[currentWord.code_length++] = instr;
+            control_stack_top -= 2;
+        } else {
+            set_error("REPEAT without BEGIN/WHILE");
+            *compile_error = 1;
+        }
     } else if (strcmp(token, "CASE") == 0) {
         instr.opcode = OP_CASE;
         currentWord.code[currentWord.code_length++] = instr;
@@ -1068,10 +1299,12 @@ void compileToken(char *token, char **input_rest, int *compile_error) {
             instr.opcode = OP_ENDOF;
             instr.operand = 0;
             currentWord.code[currentWord.code_length++] = instr;
-            currentWord.code[control_stack[--control_stack_top].addr].operand = currentWord.code_length;
-            control_stack[control_stack_top++] = (ControlEntry){CT_ENDOF, currentWord.code_length - 1};
+            currentWord.code[control_stack[control_stack_top-1].addr].operand = currentWord.code_length;
+            control_stack[control_stack_top-1].type = CT_ENDOF;
+            control_stack[control_stack_top-1].addr = currentWord.code_length - 1;
         } else {
-            send_to_channel("ENDOF without OF!");
+            set_error("ENDOF without OF");
+            *compile_error = 1;
         }
     } else if (strcmp(token, "ENDCASE") == 0) {
         if (control_stack_top > 0 && control_stack[control_stack_top-1].type == CT_ENDOF) {
@@ -1081,64 +1314,34 @@ void compileToken(char *token, char **input_rest, int *compile_error) {
                 currentWord.code[control_stack[--control_stack_top].addr].operand = currentWord.code_length;
             }
             if (control_stack_top > 0 && control_stack[control_stack_top-1].type == CT_CASE) {
-                control_stack_top--;
+                control_stack_top--; // Ferme le CASE
+            } else {
+                set_error("ENDCASE without CASE");
+                *compile_error = 1;
             }
         } else {
-            send_to_channel("ENDCASE without CASE!");
+            set_error("ENDCASE without matching OF");
+            *compile_error = 1;
         }
-    } else if (strcmp(token, "BEGIN") == 0) {
-        instr.opcode = OP_BEGIN;
+    } else if (strcmp(token, "SEE") == 0) {
+    char *next_token = strtok_r(NULL, " \t\n", input_rest);
+    if (!next_token) {
+        send_to_channel("SEE requires a word name");
+        *compile_error = 1;
+        return;
+    }
+    int index = findCompiledWordIndex(next_token);
+    if (index >= 0) {
+        instr.opcode = OP_SEE;
+        instr.operand = index;
         currentWord.code[currentWord.code_length++] = instr;
-        control_stack[control_stack_top++] = (ControlEntry){CT_DO, currentWord.code_length - 1};
-    } else if (strcmp(token, "WHILE") == 0) {
-        instr.opcode = OP_WHILE;
-        instr.operand = 0;
-        currentWord.code[currentWord.code_length++] = instr;
-        control_stack[control_stack_top++] = (ControlEntry){CT_IF, currentWord.code_length - 1};
-    } else if (strcmp(token, "REPEAT") == 0) {
-        instr.opcode = OP_REPEAT;
-        instr.operand = control_stack[control_stack_top - 2].addr;
-        currentWord.code[currentWord.code_length++] = instr;
-        currentWord.code[control_stack[control_stack_top - 1].addr].operand = currentWord.code_length;
-        control_stack_top -= 2;
-    } else if (strcmp(token, "&") == 0) {
-        instr.opcode = OP_BIT_AND;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "|") == 0) {
-        instr.opcode = OP_BIT_OR;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "^") == 0) {
-        instr.opcode = OP_BIT_XOR;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "~") == 0) {
-        instr.opcode = OP_BIT_NOT;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "LSHIFT") == 0) {
-        instr.opcode = OP_LSHIFT;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "RSHIFT") == 0) {
-        instr.opcode = OP_RSHIFT;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "WORDS") == 0) {
-        instr.opcode = OP_WORDS;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "FORGET") == 0) {
-        char *next_token = strtok_r(NULL, " \t\n", input_rest);
-        if (!next_token) {
-            send_to_channel("FORGET requires a word name");
-            return;
-        }
-        int index = findCompiledWordIndex(next_token);
-        if (index >= 0) {
-            instr.opcode = OP_FORGET;
-            instr.operand = index;
-            currentWord.code[currentWord.code_length++] = instr;
-        } else {
-            char msg[256];
-            snprintf(msg, sizeof(msg), "FORGET: Unknown word: %s", next_token);
-            send_to_channel(msg);
-        }
-    } else if (strcmp(token, "VARIABLE") == 0) {
+    } else {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "SEE: Unknown word: %s", next_token);
+        send_to_channel(msg);
+        *compile_error = 1;
+    }
+        } else if (strcmp(token, "VARIABLE") == 0) {
         char *next_token = strtok_r(NULL, " \t\n", input_rest);
         if (!next_token) {
             send_to_channel("VARIABLE requires a name");
@@ -1148,55 +1351,6 @@ void compileToken(char *token, char **input_rest, int *compile_error) {
         instr.operand = currentWord.string_count;
         currentWord.strings[currentWord.string_count++] = strdup(next_token);
         currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "@") == 0) {
-        instr.opcode = OP_FETCH;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "!") == 0) {
-        instr.opcode = OP_STORE;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "PICK") == 0) {
-        instr.opcode = OP_PICK;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "ROLL") == 0) {
-        instr.opcode = OP_ROLL;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "+!") == 0) {
-        instr.opcode = OP_PLUSSTORE;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "DEPTH") == 0) {
-        instr.opcode = OP_DEPTH;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "TOP") == 0) {
-        instr.opcode = OP_TOP;
-        currentWord.code[currentWord.code_length++] = instr;
-    } else if (strcmp(token, "SEE") == 0) {
-        char *next_token = strtok_r(NULL, " \t\n", input_rest);
-        if (!next_token) {
-            send_to_channel("SEE requires a word name");
-            return;
-        }
-        int index = findCompiledWordIndex(next_token);
-        if (index >= 0) {
-            instr.opcode = OP_PUSH;
-            instr.operand = currentWord.string_count;
-            currentWord.strings[currentWord.string_count++] = strdup(next_token);
-            currentWord.code[currentWord.code_length++] = instr;
-            instr.opcode = OP_SEE;
-            instr.operand = 0;
-            currentWord.code[currentWord.code_length++] = instr;
-        } else {
-            char msg[256];
-            snprintf(msg, sizeof(msg), "SEE: Unknown word: %s", next_token);
-            send_to_channel(msg);
-        }
-    } else if (strcmp(token, "RECURSE") == 0) {
-        if (current_word_index >= 0) {
-            instr.opcode = OP_RECURSE;
-            currentWord.code[currentWord.code_length++] = instr;
-        } else {
-            send_to_channel("RECURSE used outside a definition");
-            *compile_error = 1;
-        }
     } else {
         long int index = findCompiledWordIndex(token);
         if (index >= 0) {
@@ -1221,7 +1375,6 @@ void compileToken(char *token, char **input_rest, int *compile_error) {
         }
     }
 }
-
 void interpret(char *input, Stack *stack) {
     error_flag = 0;
     int compile_error = 0;
@@ -1231,8 +1384,15 @@ void interpret(char *input, Stack *stack) {
     while (token && !error_flag) {
         if (compiling) {
             if (strcmp(token, ";") == 0) {
-                Instruction end = {OP_END, 0};
-                currentWord.code[currentWord.code_length++] = end;
+                if (currentWord.code_length >= WORD_CODE_SIZE - 1) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "Definition failed for %s: code length exceeds %d", currentWord.name, WORD_CODE_SIZE);
+                    send_to_channel(msg);
+                    compile_error = 1;
+                } else {
+                    Instruction end = {OP_END, 0};
+                    currentWord.code[currentWord.code_length++] = end;
+                }
 
                 if (compile_error) {
                     int index = findCompiledWordIndex(currentWord.name);
@@ -1244,13 +1404,17 @@ void interpret(char *input, Stack *stack) {
                         char msg[256];
                         snprintf(msg, sizeof(msg), "Definition aborted due to error, %s forgotten", currentWord.name);
                         send_to_channel(msg);
+                    } else {
+                        char msg[256];
+                        snprintf(msg, sizeof(msg), "Definition failed for %s: compilation error", currentWord.name);
+                        send_to_channel(msg);
                     }
                 } else {
                     addCompiledWord(currentWord.name, currentWord.code, currentWord.code_length, 
                                     currentWord.strings, currentWord.string_count);
-                    char msg[256];
-                    snprintf(msg, sizeof(msg), "Defined: %s", currentWord.name);
-                    send_to_channel(msg);
+                    // char msg[256];
+                    // snprintf(msg, sizeof(msg), "Defined: %s", currentWord.name);
+                    // send_to_channel(msg);
                 }
 
                 free(currentWord.name);
@@ -1268,7 +1432,25 @@ void interpret(char *input, Stack *stack) {
             mpz_t big_value;
             mpz_init(big_value);
 
-            if (mpz_set_str(big_value, token, 10) == 0) {
+            if (token[0] == '"') { // Début d’une chaîne
+                char *start = token + 1; // Passe le premier "
+                char *end = strchr(saveptr, '"'); // Cherche le " fermant
+                if (!end) {
+                    send_to_channel("Missing closing quote");
+                    mpz_clear(big_value);
+                    return;
+                }
+                long int len = end - saveptr; // Longueur jusqu’au " fermant
+                char *str = malloc(len + 1);
+                strncpy(str, saveptr, len);
+                str[len] = '\0';
+                temp.code_length = 1;
+                temp.code[0].opcode = OP_QUOTE;
+                temp.code[0].operand = temp.string_count;
+                temp.strings[temp.string_count++] = str;
+                executeCompiledWord(&temp, stack, -1);
+                saveptr = end + 1; // Avance après le " fermant
+            } else if (mpz_set_str(big_value, token, 10) == 0) {
                 push(stack, big_value);
             } else if (strcmp(token, ":") == 0) {
                 token = strtok_r(NULL, " \t\n", &saveptr);
@@ -1471,7 +1653,7 @@ void interpret(char *input, Stack *stack) {
                     snprintf(msg, sizeof(msg), "FORGET: Unknown word: %s", next_token);
                     send_to_channel(msg);
                 }
-            } else if (strcmp(token, "VARIABLE") == 0) {
+ 		} else if (strcmp(token, "VARIABLE") == 0) {
                 char *next_token = strtok_r(NULL, " \t\n", &saveptr);
                 if (!next_token) {
                     send_to_channel("VARIABLE requires a name");
@@ -1495,6 +1677,20 @@ void interpret(char *input, Stack *stack) {
                 temp.code[0].operand = temp.string_count;
                 temp.strings[temp.string_count++] = strdup(next_token);
                 executeCompiledWord(&temp, stack, -1);
+            }
+else if (strcmp(token, "STRING") == 0) {
+    char *next_token = strtok_r(NULL, " \t\n", &saveptr);
+    if (!next_token) {
+        send_to_channel("STRING requires a name");
+        mpz_clear(big_value);
+        return;
+    }
+    temp.code_length = 1;
+    temp.code[0].opcode = OP_STRING;
+    temp.code[0].operand = temp.string_count;
+    temp.strings[temp.string_count++] = strdup(next_token);
+    executeCompiledWord(&temp, stack, -1);
+
             } else if (strcmp(token, "ALLOT") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_ALLOT, 0};
@@ -1562,6 +1758,18 @@ void interpret(char *input, Stack *stack) {
                 } else {
                     send_to_channel("RECURSE used outside a definition");
                 }
+            } else if (strcmp(token, "EMIT") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_EMIT, 0};
+                executeCompiledWord(&temp, stack, -1);
+            } else if (strcmp(token, "S!") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_STORE_STRING, 0};
+                executeCompiledWord(&temp, stack, -1);
+            } else if (strcmp(token, "PRINT") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_PRINT, 0};
+                executeCompiledWord(&temp, stack, -1);
             } else {
                 long int index = findCompiledWordIndex(token);
                 if (index >= 0) {
@@ -1578,8 +1786,18 @@ void interpret(char *input, Stack *stack) {
         }
         token = strtok_r(NULL, " \t\n", &saveptr);
     }
-}
 
+    if (compiling && !token) {
+        send_to_channel("Error: Incomplete definition detected, resetting compilation");
+        free(currentWord.name);
+        for (int i = 0; i < currentWord.string_count; i++) {
+            if (currentWord.strings[i]) free(currentWord.strings[i]);
+        }
+        compiling = 0;
+        current_word_index = -1;
+        compile_error = 0;
+    }
+}
 void irc_connect(Stack *stack) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -1590,7 +1808,7 @@ void irc_connect(Stack *stack) {
     struct sockaddr_in server;
     server.sin_family = AF_INET;
     server.sin_port = htons(6667);
-    server.sin_addr.s_addr = inet_addr("188.240.145.102");
+    server.sin_addr.s_addr = inet_addr("213.165.83.201"); 
 
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {
         printf("Connection to labynet.fr failed\n");
@@ -1612,24 +1830,13 @@ void irc_connect(Stack *stack) {
     push(stack, mpz_pool[0]);
 }
 
-void send_to_channel(const char *msg) {
-    if (irc_socket != -1) {
-        char response[512];
-        snprintf(response, sizeof(response), "PRIVMSG %s :%s\r\n", CHANNEL, msg);
-        if (send(irc_socket, response, strlen(response), 0) < 0) {
-            printf("Failed to send to channel: %s\n", msg);
-        }
-    } else {
-        printf("IRC socket not initialized\n");
-    }
-}
-
+ 
 int main() {
     int sock;
     Stack stack;
     initStack(&stack);
     init_mpz_pool();
-    char dp_cmd[] = "VARIABLE DP ";
+    char dp_cmd[] = "VARIABLE DP DROP";
     interpret(dp_cmd, &stack);
     int dp_idx = findMemoryIndex("DP");
     if (dp_idx >= 0) {
@@ -1660,13 +1867,13 @@ int main() {
                 break;
             }
             buffer[bytes] = '\0';
-            printf("Received: %s", buffer);
+            //printf("Received: %s", buffer);
 
             if (strstr(buffer, "PING ") == buffer) {
                 char pong[512];
                 snprintf(pong, sizeof(pong), "PONG %s\r\n", buffer + 5);
                 send(sock, pong, strlen(pong), 0);
-                printf("Sent: %s", pong);
+                //printf("Sent: %s", pong);
                 continue;
             }
 
@@ -1674,10 +1881,10 @@ int main() {
             snprintf(prefix, sizeof(prefix), "PRIVMSG %s :%s:", CHANNEL, BOT_NAME);
             char *msg = strstr(buffer, prefix);
             if (msg) {
-                char forth_cmd[256];
+                char forth_cmd[512];
                 snprintf(forth_cmd, sizeof(forth_cmd), "%s", msg + strlen(prefix));
                 forth_cmd[strcspn(forth_cmd, "\r\n")] = '\0';
-                printf("Executing: %s\n", forth_cmd);
+                //printf("Executing: %s\n", forth_cmd);
                 interpret(forth_cmd, &stack);
             }
         }
