@@ -17,7 +17,7 @@
 #define MPZ_POOL_SIZE 3
 
 #define BOT_NAME "ForthBot"
-#define CHANNEL "#labynet"
+#define CHANNEL "##forth"
 
 typedef enum {
     OP_PUSH, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_DUP, OP_SWAP, OP_OVER,
@@ -1317,21 +1317,21 @@ if (strcmp(token, "(") == 0) {
         instr.operand = 0;
         currentWord.code[currentWord.code_length++] = instr;
         control_stack[control_stack_top++] = (ControlEntry){CT_DO, currentWord.code_length - 1};
-    } else if (strcmp(token, "REPEAT") == 0) {
-        if (control_stack_top > 0 && control_stack[control_stack_top-1].type == CT_DO) {
-            instr.opcode = OP_REPEAT;
-            currentWord.code[currentWord.code_length++] = instr;
-            int begin_addr = control_stack[control_stack_top-1].addr;
-            currentWord.code[currentWord.code_length-1].operand = begin_addr;
-            instr.opcode = OP_BRANCH;
-            instr.operand = currentWord.code_length;
-            currentWord.code[control_stack[control_stack_top-2].addr].operand = currentWord.code_length;
-            currentWord.code[currentWord.code_length++] = instr;
-            control_stack_top -= 2;
-        } else {
-            set_error("REPEAT without BEGIN/WHILE");
-            *compile_error = 1;
-        }
+} else if (strcmp(token, "REPEAT") == 0) {
+    if (control_stack_top >= 2 && control_stack[control_stack_top-1].type == CT_DO && control_stack[control_stack_top-2].type == CT_DO) {
+        instr.opcode = OP_REPEAT;
+        currentWord.code[currentWord.code_length++] = instr;
+        int begin_addr = control_stack[control_stack_top-2].addr; // BEGIN, pas WHILE
+        currentWord.code[currentWord.code_length-1].operand = begin_addr;
+        instr.opcode = OP_BRANCH;
+        instr.operand = currentWord.code_length + 1; // Après le BRANCH
+        currentWord.code[control_stack[control_stack_top-1].addr].operand = currentWord.code_length; // Met à jour WHILE
+        currentWord.code[currentWord.code_length++] = instr;
+        control_stack_top -= 2;
+    } else {
+        set_error("REPEAT without BEGIN/WHILE");
+        *compile_error = 1;
+    }
     } else if (strcmp(token, "CASE") == 0) {
         instr.opcode = OP_CASE;
         currentWord.code[currentWord.code_length++] = instr;
@@ -1865,7 +1865,7 @@ void irc_connect(Stack *stack) {
     struct sockaddr_in server;
     server.sin_family = AF_INET;
     server.sin_port = htons(6667);
-    server.sin_addr.s_addr = inet_addr("213.165.83.201"); 
+    server.sin_addr.s_addr = inet_addr("94.125.182.252"); 
 
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {
         printf("Connection to labynet.fr failed\n");
