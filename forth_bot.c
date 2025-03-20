@@ -16,8 +16,8 @@
 #define MAX_STRING_SIZE 256
 #define MPZ_POOL_SIZE 3
 
-#define BOT_NAME "forth"
-#define CHANNEL "#labynet"
+#define BOT_NAME "ForthBot"
+#define CHANNEL "##forth"
 
 typedef enum {
     OP_PUSH, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_DUP, OP_SWAP, OP_OVER,
@@ -547,9 +547,9 @@ case OP_DOT:
     break;
         case OP_DOT_S:
             if (stack->top >= 0) {
-                char stack_msg[1024] = "Stack: ";
+                char stack_msg[4096] = "Stack: ";
                 for (int i = 0; i <= stack->top; i++) {
-                    char num[64];
+                    char num[4096];
                     gmp_snprintf(num, sizeof(num), "%Zd ", stack->data[i]);
                     strncat(stack_msg, num, sizeof(stack_msg) - strlen(stack_msg) - 1);
                 }
@@ -1135,6 +1135,18 @@ void addCompiledWord(char *name, Instruction *code, long int code_length, char *
 }
 void compileToken(char *token, char **input_rest, int *compile_error) {
     Instruction instr = {0};
+ 
+if (strcmp(token, "(") == 0) {
+    char *start = *input_rest;
+    char *end = strstr(start, ")");
+    if (!end) {
+        send_to_channel("Missing closing parenthesis in comment");
+        *compile_error = 1;
+        return;
+    }
+    *input_rest = end + 1;
+    return;
+}
     if (strcmp(token, "+") == 0) {
         instr.opcode = OP_ADD;
         currentWord.code[currentWord.code_length++] = instr;
@@ -1305,21 +1317,21 @@ void compileToken(char *token, char **input_rest, int *compile_error) {
         instr.operand = 0;
         currentWord.code[currentWord.code_length++] = instr;
         control_stack[control_stack_top++] = (ControlEntry){CT_DO, currentWord.code_length - 1};
-    } else if (strcmp(token, "REPEAT") == 0) {
-        if (control_stack_top > 0 && control_stack[control_stack_top-1].type == CT_DO) {
-            instr.opcode = OP_REPEAT;
-            currentWord.code[currentWord.code_length++] = instr;
-            int begin_addr = control_stack[control_stack_top-1].addr;
-            currentWord.code[currentWord.code_length-1].operand = begin_addr;
-            instr.opcode = OP_BRANCH;
-            instr.operand = currentWord.code_length;
-            currentWord.code[control_stack[control_stack_top-2].addr].operand = currentWord.code_length;
-            currentWord.code[currentWord.code_length++] = instr;
-            control_stack_top -= 2;
-        } else {
-            set_error("REPEAT without BEGIN/WHILE");
-            *compile_error = 1;
-        }
+} else if (strcmp(token, "REPEAT") == 0) {
+    if (control_stack_top >= 2 && control_stack[control_stack_top-1].type == CT_DO && control_stack[control_stack_top-2].type == CT_DO) {
+        instr.opcode = OP_REPEAT;
+        currentWord.code[currentWord.code_length++] = instr;
+        int begin_addr = control_stack[control_stack_top-2].addr; // BEGIN, pas WHILE
+        currentWord.code[currentWord.code_length-1].operand = begin_addr;
+        instr.opcode = OP_BRANCH;
+        instr.operand = currentWord.code_length + 1; // Après le BRANCH
+        currentWord.code[control_stack[control_stack_top-1].addr].operand = currentWord.code_length; // Met à jour WHILE
+        currentWord.code[currentWord.code_length++] = instr;
+        control_stack_top -= 2;
+    } else {
+        set_error("REPEAT without BEGIN/WHILE");
+        *compile_error = 1;
+    }
     } else if (strcmp(token, "CASE") == 0) {
         instr.opcode = OP_CASE;
         currentWord.code[currentWord.code_length++] = instr;
@@ -1415,8 +1427,18 @@ void interpret(char *input, Stack *stack) {
     int compile_error = 0;
     char *saveptr;
     char *token = strtok_r(input, " \t\n", &saveptr);
-
-    while (token && !error_flag) {
+ while (token && !error_flag) {
+        // Gestion des commentaires entre parenthèses "( )"
+		if (strcmp(token, "(") == 0) {
+            char *end = strstr(saveptr, ")");
+            if (!end) {
+                send_to_channel("Missing closing parenthesis for comment");
+                return;
+            }
+            saveptr = end + 1;
+            token = strtok_r(NULL, " \t\n", &saveptr);
+            continue;
+        }
         if (compiling) {
             if (strcmp(token, ";") == 0) {
                 if (currentWord.code_length >= WORD_CODE_SIZE - 1) {
@@ -1843,7 +1865,7 @@ void irc_connect(Stack *stack) {
     struct sockaddr_in server;
     server.sin_family = AF_INET;
     server.sin_port = htons(6667);
-    server.sin_addr.s_addr = inet_addr("213.165.83.201"); 
+    server.sin_addr.s_addr = inet_addr("94.125.182.252"); 
 
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {
         printf("Connection to labynet.fr failed\n");
