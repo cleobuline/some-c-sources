@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <gmp.h>
+#include <time.h>
 
 #define STACK_SIZE 1000
 #define DICT_SIZE 100
@@ -17,19 +18,21 @@
 #define MPZ_POOL_SIZE 3
 
 #define BOT_NAME "ForthBot"
-#define CHANNEL "##forth"
+#define CHANNEL "#labynet"
 
 typedef enum {
     OP_PUSH, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_DUP, OP_SWAP, OP_OVER,
-    OP_ROT, OP_DROP, OP_EQ, OP_LT, OP_GT, OP_AND, OP_OR, OP_NOT, OP_I,
-    OP_DO, OP_LOOP, OP_BRANCH_FALSE, OP_BRANCH, OP_CALL, OP_END, OP_DOT_QUOTE,
+    OP_ROT, OP_DROP, OP_EQ, OP_LT, OP_GT, OP_AND, OP_OR, OP_NOT, OP_I,OP_J ,
+    OP_DO, OP_LOOP, OP_BRANCH_FALSE, OP_BRANCH,
+    OP_UNLOOP, OP_PLOOP,OP_SQRT,OP_CALL, OP_END, OP_DOT_QUOTE,
     OP_CR, OP_DOT_S, OP_FLUSH, OP_DOT, OP_CASE, OP_OF, OP_ENDOF, OP_ENDCASE,
     OP_EXIT, OP_BEGIN, OP_WHILE, OP_REPEAT,
     OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_BIT_NOT, OP_LSHIFT, OP_RSHIFT,
     OP_WORDS, OP_FORGET, OP_VARIABLE, OP_FETCH, OP_STORE,
     OP_PICK, OP_ROLL, OP_PLUSSTORE, OP_DEPTH, OP_TOP, OP_NIP, OP_MOD,
     OP_CREATE, OP_ALLOT, OP_SEE, OP_RECURSE, OP_IRC_CONNECT, OP_IRC_SEND,OP_EMIT, 
-    OP_STRING, OP_QUOTE, OP_PRINT ,OP_STORE_STRING // Nouveaux opcodes pour chaînes
+    OP_STRING, OP_QUOTE, OP_PRINT ,OP_STORE_STRING,OP_AGAIN ,
+    OP_TO_R, OP_FROM_R, OP_R_FETCH, OP_UNTIL, OP_CLOCK 
 } OpCode;
 typedef struct {
     OpCode opcode;
@@ -64,11 +67,7 @@ typedef struct {
 ControlEntry control_stack[CONTROL_STACK_SIZE];
 int control_stack_top = 0;
 
-typedef struct {
-    mpz_t index;
-    mpz_t limit;
-    long int addr;
-} LoopControl;
+ 
 
 typedef enum {
     MEMORY_VARIABLE,
@@ -90,8 +89,7 @@ int string_stack_top = -1;
 Memory memory[VAR_SIZE];
 long int memory_count = 0;
 
-LoopControl loop_stack[LOOP_STACK_SIZE];
-long int loop_stack_top = -1;
+ 
 
 CompiledWord dictionary[DICT_SIZE];
 long int dict_count = 0;
@@ -129,6 +127,11 @@ void irc_connect(Stack *stack);
 void send_to_channel(const char *msg);
 void print_word_definition_irc(int index, Stack *stack);
 
+// Déclarations globales  
+Stack main_stack;    // Pile principale (data stack)
+Stack return_stack;  // Pile de retour (return stack)
+
+
 void initStack(Stack *stack) {
     stack->top = -1;
     for (int i = 0; i < STACK_SIZE; i++) {
@@ -163,6 +166,10 @@ void clearStack(Stack *stack) {
     for (int i = 0; i < STACK_SIZE; i++) {
         mpz_clear(stack->data[i]);
     }
+    for (int i = 0; i < STACK_SIZE; i++) {
+        mpz_clear(return_stack.data[i]);
+    }
+    return_stack.top = -1;
     for (int i = 0; i < memory_count; i++) {
         if (memory[i].name) free(memory[i].name);
         if (memory[i].type == MEMORY_VARIABLE || memory[i].type == MEMORY_ARRAY) {
@@ -392,6 +399,7 @@ void print_word_definition_irc(int index, Stack *stack) {
             case OP_RECURSE: snprintf(instr_str, sizeof(instr_str), "RECURSE "); break;
             case OP_BEGIN: snprintf(instr_str, sizeof(instr_str), "BEGIN "); break;
             case OP_EMIT: snprintf(instr_str, sizeof(instr_str), "EMIT "); break;
+            case OP_AGAIN: snprintf(instr_str, sizeof(instr_str), "AGAIN "); break;
             case OP_WHILE: 
                 snprintf(instr_str, sizeof(instr_str), "WHILE ");
                 branch_targets[branch_depth++] = instr.operand; // Sauvegarde la cible pour REPEAT
@@ -619,38 +627,86 @@ case OP_CR:
                 push(stack, *result);
             }
             break;
-        case OP_I:
-            if (loop_stack_top >= 0) push(stack, loop_stack[loop_stack_top].index);
-            else set_error("I used outside of a loop");
-            break;
-        case OP_DO:
-            if (stack->top < 1) {
-                set_error("DO: Stack underflow");
-                break;
-            }
-            pop(stack, *b); // Start
-            pop(stack, *a); // Limit
-            if (!error_flag && loop_stack_top < LOOP_STACK_SIZE - 1) {
-                loop_stack_top++;
-                mpz_init_set(loop_stack[loop_stack_top].index, *b);
-                mpz_init_set(loop_stack[loop_stack_top].limit, *a);
-                loop_stack[loop_stack_top].addr = *ip + 1;
-            } else if (!error_flag) {
-                set_error("Loop stack overflow");
-            }
-            break;
-        case OP_LOOP:
-            if (loop_stack_top >= 0) {
-                mpz_add_ui(loop_stack[loop_stack_top].index, loop_stack[loop_stack_top].index, 1);
-                if (mpz_cmp(loop_stack[loop_stack_top].index, loop_stack[loop_stack_top].limit) < 0) {
-                    *ip = loop_stack[loop_stack_top].addr - 1;
-                } else {
-                    mpz_clear(loop_stack[loop_stack_top].index);
-                    mpz_clear(loop_stack[loop_stack_top].limit);
-                    loop_stack_top--;
-                }
+case OP_I:
+    if (return_stack.top >= 1) {  // index à top-1, limit à top
+        mpz_set(*result, return_stack.data[return_stack.top - 1]);
+        push(stack, *result);
+    } else {
+        set_error("I used outside of a loop");
+    }
+    break;
+case OP_J:
+    if (return_stack.top >= 4) {  // Deux boucles = 6 éléments (limit1, index1, addr1, limit2, index2, addr2)
+        mpz_set(*result, return_stack.data[return_stack.top - 4]);  // Index de la boucle externe
+        push(stack, *result);
+    } else {
+        set_error("J used outside of a nested loop");
+    }
+    break;
+case OP_DO:
+    if (stack->top < 1) {
+        set_error("DO: Stack underflow");
+        break;
+    }
+    pop(stack, *b);  // Start (index initial)
+    pop(stack, *a);  // Limit
+    if (!error_flag && return_stack.top < STACK_SIZE - 3) {  // Réserve 3 places : limit, index, addr
+        return_stack.top += 3;  // Alloue espace
+        mpz_set(return_stack.data[return_stack.top - 2], *a);  // limit
+        mpz_set(return_stack.data[return_stack.top - 1], *b);  // index
+        mpz_set_si(return_stack.data[return_stack.top], *ip + 1);  // addr
+    } else if (!error_flag) {
+        set_error("DO: Return stack overflow");
+        push(stack, *a);  // Remet les valeurs si erreur
+        push(stack, *b);
+    }
+    break;
+
+case OP_LOOP:
+    if (return_stack.top >= 2) {
+        mpz_add_ui(return_stack.data[return_stack.top - 1], return_stack.data[return_stack.top - 1], 1);  // Incrémente index
+        if (mpz_cmp(return_stack.data[return_stack.top - 1], return_stack.data[return_stack.top - 2]) < 0) {
+            *ip = mpz_get_si(return_stack.data[return_stack.top]) - 1;  // Retour à addr
+        } else {
+            return_stack.top -= 3;  // Dépile limit, index, addr
+        }
+    } else {
+        set_error("LOOP without DO");
+    }
+    break;
+
+case OP_PLOOP:
+    if (return_stack.top >= 2) {
+        pop(stack, *a);  // Incrément
+        if (!error_flag) {
+            mpz_add(return_stack.data[return_stack.top - 1], return_stack.data[return_stack.top - 1], *a);
+            if (mpz_cmp(return_stack.data[return_stack.top - 1], return_stack.data[return_stack.top - 2]) < 0) {
+                *ip = mpz_get_si(return_stack.data[return_stack.top]) - 1;
             } else {
-                set_error("LOOP without DO");
+                return_stack.top -= 3;
+            }
+        }
+    } else {
+        set_error("+LOOP without DO");
+    }
+    break;
+
+case OP_UNLOOP:
+    if (return_stack.top >= 2) {
+        return_stack.top -= 3;  // Dépile limit, index, addr
+    } else {
+        set_error("UNLOOP without DO");
+    }
+    break;
+case OP_SQRT:
+            pop(stack, *a); // Prend le nombre de la pile
+            if (!error_flag) {
+                if (mpz_sgn(*a) < 0) {
+                    set_error("SQRT of negative number");
+                } else {
+                    mpz_sqrt(*result, *a); // Calcule la racine carrée
+                    push(stack, *result);
+                }
             }
             break;
         case OP_BRANCH_FALSE:
@@ -696,9 +752,9 @@ case OP_CR:
         case OP_ENDCASE:
             pop(stack, *a);
             break;
-        case OP_EXIT:
-            *ip = word->code_length - 1;
-            break;
+case OP_EXIT:
+    *ip = word->code_length; // Saute après la fin, pas juste à OP_END
+    break;
         case OP_BEGIN:
             break;
         case OP_WHILE:
@@ -982,6 +1038,15 @@ case OP_STORE_STRING:
         set_error("S!: Invalid memory index");
     }
     break;
+    case OP_UNTIL:
+    pop(stack, *a);
+    if (!error_flag && mpz_cmp_si(*a, 0) == 0) {
+        *ip = instr.operand - 1;
+    }
+    break;
+case OP_AGAIN:
+        *ip = instr.operand - 1; // Boucle vers BEGIN
+        break;
 case OP_QUOTE:
     if (instr.operand >= 0 && instr.operand < word->string_count && word->strings[instr.operand]) {
         push_string(word->strings[instr.operand]);
@@ -1067,6 +1132,35 @@ case OP_EMIT:
                 set_error("RECURSE called with invalid word index");
             }
             break;
+case OP_TO_R:
+    pop(&main_stack, *a);  // Retire de la pile principale
+    if (!error_flag) {
+        if (return_stack.top < STACK_SIZE - 1) {
+            mpz_set(return_stack.data[++return_stack.top], *a);  // Ajoute à return_stack
+        } else {
+            set_error(">R: Return stack overflow");
+            push(&main_stack, *a);  // Remet la valeur si erreur
+        }
+    }
+    break;
+
+case OP_FROM_R:
+    if (return_stack.top >= 0) {
+        mpz_set(*result, return_stack.data[return_stack.top--]);  // Retire de return_stack
+        push(&main_stack, *result);  // Ajoute à la pile principale
+    } else {
+        set_error("R>: Return stack underflow");
+    }
+    break;
+
+case OP_R_FETCH:
+    if (return_stack.top >= 0) {
+        mpz_set(*result, return_stack.data[return_stack.top]);  // Copie sans dépiler
+        push(&main_stack, *result);
+    } else {
+        set_error("R@: Return stack underflow");
+    }
+    break;
 case OP_SEE:
     if (compiling || word_index >= 0) { // Mode compilé ou dans une définition
         print_word_definition_irc(instr.operand, stack);
@@ -1077,6 +1171,15 @@ case OP_SEE:
         } else if (!error_flag) {
             set_error("SEE: Invalid word index");
         }
+    }
+    break;
+    case OP_CLOCK:
+    time_t now = time(NULL);
+    if (now == (time_t)-1) {
+        set_error("CLOCK: Failed to get system time");
+    } else {
+        mpz_set_si(*result, (long)now);
+        push(stack, *result);
     }
     break;
 
@@ -1201,6 +1304,9 @@ if (strcmp(token, "(") == 0) {
     } else if (strcmp(token, "I") == 0) {
         instr.opcode = OP_I;
         currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "J") == 0) {
+    instr.opcode = OP_J;
+    currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "CR") == 0) {
         instr.opcode = OP_CR;
         currentWord.code[currentWord.code_length++] = instr;
@@ -1240,6 +1346,21 @@ if (strcmp(token, "(") == 0) {
             currentWord.code[currentWord.code_length++] = instr;
             control_stack_top--;
         }
+} else if (strcmp(token, "+LOOP") == 0) { // Changement ici
+        if (control_stack_top > 0 && control_stack[control_stack_top-1].type == CT_DO) {
+            instr.opcode = OP_PLOOP;
+            currentWord.code[currentWord.code_length++] = instr;
+            control_stack_top--;
+        } else {
+            set_error("+LOOP without DO");
+            *compile_error = 1;
+        }
+    } else if (strcmp(token, "SQRT") == 0) {
+        instr.opcode = OP_SQRT;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "UNLOOP") == 0) {
+        instr.opcode = OP_UNLOOP;
+        currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "EXIT") == 0) {
         instr.opcode = OP_EXIT;
         currentWord.code[currentWord.code_length++] = instr;
@@ -1266,33 +1387,7 @@ if (strcmp(token, "(") == 0) {
         currentWord.code[currentWord.code_length++] = instr;
         *input_rest = end + 1;
         return;
-    } else if (strcmp(token, ".\"") == 0) {
-        char *start = *input_rest;
-        char *end = strchr(start, '"');
-        if (!end) {
-            send_to_channel("Missing closing quote for .\"");
-            return;
-        }
-        long int len = end - start;
-        char *str = malloc(len + 1);
-        strncpy(str, start, len);
-        str[len] = '\0';
-        instr.opcode = OP_DOT_QUOTE;
-        instr.operand = currentWord.string_count;
-        currentWord.strings[currentWord.string_count++] = str;
-        currentWord.code[currentWord.code_length++] = instr;
-        *input_rest = end + 1;
-        return;
-    } else if (strcmp(token, "STRING") == 0) {
-        char *next_token = strtok_r(NULL, " \t\n", input_rest);
-        if (!next_token) {
-            send_to_channel("STRING requires a name");
-            return;
-        }
-        instr.opcode = OP_STRING;
-        instr.operand = currentWord.string_count;
-        currentWord.strings[currentWord.string_count++] = strdup(next_token);
-        currentWord.code[currentWord.code_length++] = instr;
+
     } else if (strcmp(token, "EMIT") == 0) {
         instr.opcode = OP_EMIT;
         currentWord.code[currentWord.code_length++] = instr;
@@ -1308,6 +1403,12 @@ if (strcmp(token, "(") == 0) {
     } else if (strcmp(token, "RECURSE") == 0) { // Déjà ajouté
         instr.opcode = OP_RECURSE;
         currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "@") == 0) {
+    instr.opcode = OP_FETCH;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "!") == 0) {
+    instr.opcode = OP_STORE;
+    currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "BEGIN") == 0) {
         instr.opcode = OP_BEGIN;
         currentWord.code[currentWord.code_length++] = instr;
@@ -1330,6 +1431,27 @@ if (strcmp(token, "(") == 0) {
         control_stack_top -= 2;
     } else {
         set_error("REPEAT without BEGIN/WHILE");
+        *compile_error = 1;
+    }
+        } else if (strcmp(token, "AGAIN") == 0) {
+        if (control_stack_top > 0 && control_stack[control_stack_top-1].type == CT_DO) {
+            instr.opcode = OP_AGAIN;
+            currentWord.code[currentWord.code_length++] = instr;
+            int begin_addr = control_stack[control_stack_top-1].addr; // Adresse du BEGIN
+            currentWord.code[currentWord.code_length-1].operand = begin_addr;
+            control_stack_top--; // Ferme le BEGIN
+        } else {
+            set_error("AGAIN without BEGIN");
+            *compile_error = 1;
+        }
+        } else if (strcmp(token, "UNTIL") == 0) {
+    if (control_stack_top > 0 && control_stack[control_stack_top-1].type == CT_DO) {
+        instr.opcode = OP_UNTIL;
+        instr.operand = control_stack[control_stack_top-1].addr; // Retour au BEGIN
+        currentWord.code[currentWord.code_length++] = instr;
+        control_stack_top--; // Ferme le BEGIN
+    } else {
+        set_error("UNTIL without BEGIN");
         *compile_error = 1;
     }
     } else if (strcmp(token, "CASE") == 0) {
@@ -1398,6 +1520,21 @@ if (strcmp(token, "(") == 0) {
         instr.operand = currentWord.string_count;
         currentWord.strings[currentWord.string_count++] = strdup(next_token);
         currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, ">R") == 0) {
+        instr.opcode = OP_TO_R;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "R>") == 0) {
+        instr.opcode = OP_FROM_R;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "R@") == 0) {
+        instr.opcode = OP_R_FETCH;
+        currentWord.code[currentWord.code_length++] = instr;
+        } else if (strcmp(token, "CLOCK") == 0) {
+    instr.opcode = OP_CLOCK;
+    currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "&") == 0) {
+    instr.opcode = OP_BIT_AND;
+    currentWord.code[currentWord.code_length++] = instr;
     } else {
         long int index = findCompiledWordIndex(token);
         if (index >= 0) {
@@ -1427,9 +1564,9 @@ void interpret(char *input, Stack *stack) {
     int compile_error = 0;
     char *saveptr;
     char *token = strtok_r(input, " \t\n", &saveptr);
- while (token && !error_flag) {
+    while (token && !error_flag) {
         // Gestion des commentaires entre parenthèses "( )"
-		if (strcmp(token, "(") == 0) {
+        if (strcmp(token, "(") == 0) {
             char *end = strstr(saveptr, ")");
             if (!end) {
                 send_to_channel("Missing closing parenthesis for comment");
@@ -1439,6 +1576,11 @@ void interpret(char *input, Stack *stack) {
             token = strtok_r(NULL, " \t\n", &saveptr);
             continue;
         }
+
+        CompiledWord temp = {.code_length = 0, .string_count = 0};
+        mpz_t big_value;
+        mpz_init(big_value);
+
         if (compiling) {
             if (strcmp(token, ";") == 0) {
                 if (currentWord.code_length >= WORD_CODE_SIZE - 1) {
@@ -1455,9 +1597,9 @@ void interpret(char *input, Stack *stack) {
                     int index = findCompiledWordIndex(currentWord.name);
                     if (index >= 0) {
                         Instruction forget_instr = {OP_FORGET, index};
-                        CompiledWord temp = {.code_length = 1, .string_count = 0};
-                        temp.code[0] = forget_instr;
-                        executeCompiledWord(&temp, stack, -1);
+                        CompiledWord temp_forget = {.code_length = 1, .string_count = 0};
+                        temp_forget.code[0] = forget_instr;
+                        executeCompiledWord(&temp_forget, stack, -1);
                         char msg[512];
                         snprintf(msg, sizeof(msg), "Definition aborted due to error, %s forgotten", currentWord.name);
                         send_to_channel(msg);
@@ -1469,9 +1611,6 @@ void interpret(char *input, Stack *stack) {
                 } else {
                     addCompiledWord(currentWord.name, currentWord.code, currentWord.code_length, 
                                     currentWord.strings, currentWord.string_count);
-                    // char msg[512];
-                    // snprintf(msg, sizeof(msg), "Defined: %s", currentWord.name);
-                    // send_to_channel(msg);
                 }
 
                 free(currentWord.name);
@@ -1483,12 +1622,19 @@ void interpret(char *input, Stack *stack) {
                 compile_error = 0;
             } else {
                 compileToken(token, &saveptr, &compile_error);
+                if (compile_error) {
+                    send_to_channel("Compilation aborted due to error");
+                    free(currentWord.name);
+                    for (int i = 0; i < currentWord.string_count; i++) {
+                        if (currentWord.strings[i]) free(currentWord.strings[i]);
+                    }
+                    compiling = 0;
+                    current_word_index = -1;
+                    compile_error = 0;
+                    break; // Sort immédiatement après une erreur
+                }
             }
         } else {
-            CompiledWord temp = {.code_length = 0, .string_count = 0};
-            mpz_t big_value;
-            mpz_init(big_value);
-
             if (token[0] == '"') { // Début d’une chaîne
                 char *start = token + 1; // Passe le premier "
                 char *end = strchr(saveptr, '"'); // Cherche le " fermant
@@ -1573,6 +1719,18 @@ void interpret(char *input, Stack *stack) {
                 executeCompiledWord(&temp, stack, -1);
                 free(str);
                 saveptr = end + 1;
+            } else if (strcmp(token, "STRING") == 0) {
+                char *next_token = strtok_r(NULL, " \t\n", &saveptr);
+                if (!next_token) {
+                    send_to_channel("STRING requires a name");
+                    mpz_clear(big_value);
+                    return;
+                }
+                temp.code_length = 1;
+                temp.code[0].opcode = OP_STRING;
+                temp.code[0].operand = temp.string_count;
+                temp.strings[temp.string_count++] = strdup(next_token);
+                executeCompiledWord(&temp, stack, -1);
             } else if (strcmp(token, "+") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_ADD, 0};
@@ -1645,6 +1803,10 @@ void interpret(char *input, Stack *stack) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_I, 0};
                 executeCompiledWord(&temp, stack, -1);
+            } else if (strcmp(token, "J") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_J, 0};
+                executeCompiledWord(&temp, stack, -1);
             } else if (strcmp(token, "CR") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_CR, 0};
@@ -1710,7 +1872,7 @@ void interpret(char *input, Stack *stack) {
                     snprintf(msg, sizeof(msg), "FORGET: Unknown word: %s", next_token);
                     send_to_channel(msg);
                 }
- 		} else if (strcmp(token, "VARIABLE") == 0) {
+            } else if (strcmp(token, "VARIABLE") == 0) {
                 char *next_token = strtok_r(NULL, " \t\n", &saveptr);
                 if (!next_token) {
                     send_to_channel("VARIABLE requires a name");
@@ -1734,20 +1896,6 @@ void interpret(char *input, Stack *stack) {
                 temp.code[0].operand = temp.string_count;
                 temp.strings[temp.string_count++] = strdup(next_token);
                 executeCompiledWord(&temp, stack, -1);
-            }
-else if (strcmp(token, "STRING") == 0) {
-    char *next_token = strtok_r(NULL, " \t\n", &saveptr);
-    if (!next_token) {
-        send_to_channel("STRING requires a name");
-        mpz_clear(big_value);
-        return;
-    }
-    temp.code_length = 1;
-    temp.code[0].opcode = OP_STRING;
-    temp.code[0].operand = temp.string_count;
-    temp.strings[temp.string_count++] = strdup(next_token);
-    executeCompiledWord(&temp, stack, -1);
-
             } else if (strcmp(token, "ALLOT") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_ALLOT, 0};
@@ -1819,6 +1967,10 @@ else if (strcmp(token, "STRING") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_EMIT, 0};
                 executeCompiledWord(&temp, stack, -1);
+            } else if (strcmp(token, "SQRT") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_SQRT, 0};
+                executeCompiledWord(&temp, stack, -1);
             } else if (strcmp(token, "S!") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_STORE_STRING, 0};
@@ -1827,6 +1979,24 @@ else if (strcmp(token, "STRING") == 0) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_PRINT, 0};
                 executeCompiledWord(&temp, stack, -1);
+            } else if (strcmp(token, ">R") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_TO_R, 0};
+                executeCompiledWord(&temp, stack, -1);
+            } else if (strcmp(token, "R>") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_FROM_R, 0};
+                executeCompiledWord(&temp, stack, -1);
+            } else if (strcmp(token, "R@") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_R_FETCH, 0};
+                executeCompiledWord(&temp, stack, -1);
+            } else if (strcmp(token, "CLOCK") == 0) {
+                temp.code_length = 1;
+                temp.code[0] = (Instruction){OP_CLOCK, 0};
+                executeCompiledWord(&temp, stack, -1);
+            } else if (strcmp(token, "UNTIL") == 0) {
+                send_to_channel("UNTIL can only be used inside a definition");
             } else {
                 long int index = findCompiledWordIndex(token);
                 if (index >= 0) {
@@ -1865,7 +2035,7 @@ void irc_connect(Stack *stack) {
     struct sockaddr_in server;
     server.sin_family = AF_INET;
     server.sin_port = htons(6667);
-    server.sin_addr.s_addr = inet_addr("94.125.182.252"); 
+    server.sin_addr.s_addr = inet_addr("213.165.83.201"); 
 
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {
         printf("Connection to labynet.fr failed\n");
@@ -1888,30 +2058,35 @@ void irc_connect(Stack *stack) {
 }
 
  
+
 int main() {
-    int sock;
-    Stack stack;
-    initStack(&stack);
+    // Initialisation des deux piles
+        int sock;
+    initStack(&main_stack);
+    initStack(&return_stack);
     init_mpz_pool();
+
+    // Initialisation de DP (comme dans ton code)
     char dp_cmd[] = "VARIABLE DP DROP";
-    interpret(dp_cmd, &stack);
+    interpret(dp_cmd, &main_stack);  // Passe explicitement main_stack
     int dp_idx = findMemoryIndex("DP");
     if (dp_idx >= 0) {
         mpz_set_si(memory[dp_idx].values[0], 0);
     } else {
         printf("DP non trouvé\n");
     }
+
     printf("Forth-like interpreter with GMP\n");
     char buffer[512];
     while (1) {
-        irc_connect(&stack);
-        if (stack.top < 0) {
+        irc_connect(&main_stack);  // Passe main_stack pour stocker le socket
+        if (main_stack.top < 0) {
             printf("Failed to connect, retrying in 5 seconds...\n");
             sleep(5);
             continue;
         }
-        sock = mpz_get_si(stack.data[stack.top]);
-        stack.top--;
+        int sock = mpz_get_si(main_stack.data[main_stack.top]);
+        main_stack.top--;  // Dépile le socket
 
         printf("Connected to labynet.fr\n");
 
@@ -1924,13 +2099,11 @@ int main() {
                 break;
             }
             buffer[bytes] = '\0';
-            //printf("Received: %s", buffer);
 
             if (strstr(buffer, "PING ") == buffer) {
                 char pong[512];
                 snprintf(pong, sizeof(pong), "PONG %s\r\n", buffer + 5);
                 send(sock, pong, strlen(pong), 0);
-                //printf("Sent: %s", pong);
                 continue;
             }
 
@@ -1941,13 +2114,12 @@ int main() {
                 char forth_cmd[512];
                 snprintf(forth_cmd, sizeof(forth_cmd), "%s", msg + strlen(prefix));
                 forth_cmd[strcspn(forth_cmd, "\r\n")] = '\0';
-                //printf("Executing: %s\n", forth_cmd);
-                interpret(forth_cmd, &stack);
+                interpret(forth_cmd, &main_stack);  // Passe main_stack
             }
         }
     }
-
-    clearStack(&stack);
+ 
+    clearStack(&main_stack);  // Nettoie main_stack
     close(sock);
     clear_mpz_pool();
     return 0;
