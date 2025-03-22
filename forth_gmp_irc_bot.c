@@ -18,7 +18,7 @@
 #define MPZ_POOL_SIZE 3
 
 #define BOT_NAME "ForthBot"
-#define CHANNEL "##forth"
+#define CHANNEL "#labynet"
 
 typedef enum {
     OP_PUSH, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_DUP, OP_SWAP, OP_OVER,
@@ -1612,14 +1612,14 @@ if (strcmp(token, "(") == 0) {
     char *str = malloc(len + 1);
     strncpy(str, start, len);
     str[len] = '\0';
-    instr.opcode = OP_DOT_QUOTE;
+     instr.opcode = OP_DOT_QUOTE;
     instr.operand = currentWord.string_count;
     currentWord.strings[currentWord.string_count++] = str;
     currentWord.code[currentWord.code_length++] = instr;
     *input_rest = end + 1; // Avance après le " fermant
     while (**input_rest == ' ' || **input_rest == '\t') (*input_rest)++; // Passe les espaces
     return;
-        } else if (strcmp(token, "CLOCK") == 0) {
+    } else if (strcmp(token, "CLOCK") == 0) {
     instr.opcode = OP_CLOCK;
     currentWord.code[currentWord.code_length++] = instr;
     } else {
@@ -2078,10 +2078,6 @@ void interpret(char *input, Stack *stack) {
                 temp.code_length = 1;
                 temp.code[0] = (Instruction){OP_R_FETCH, 0};
                 executeCompiledWord(&temp, stack, -1);
-            } else if (strcmp(token, "CLOCK") == 0) {
-                temp.code_length = 1;
-                temp.code[0] = (Instruction){OP_CLOCK, 0};
-                executeCompiledWord(&temp, stack, -1);
             } else if (strcmp(token, "UNTIL") == 0) {
                 send_to_channel("UNTIL can only be used inside a definition");
             } else {
@@ -2122,7 +2118,7 @@ void irc_connect(Stack *stack) {
     struct sockaddr_in server;
     server.sin_family = AF_INET;
     server.sin_port = htons(6667);
-    server.sin_addr.s_addr = inet_addr("94.125.182.252"); 
+    server.sin_addr.s_addr = inet_addr("213.165.83.201"); 
 
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {
         printf("Connection to labynet.fr failed\n");
