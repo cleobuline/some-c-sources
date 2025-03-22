@@ -1755,38 +1755,49 @@ void interpret(char *input, Stack *stack) {
                     send_to_channel("Colon requires a word name");
                 }
             } else if (strcmp(token, "LOAD") == 0) {
-                char *start = saveptr;
-                while (*start && (*start == ' ' || *start == '\t')) start++;
-                if (*start != '"') {
-                    send_to_channel("LOAD expects a quoted filename");
-                    mpz_clear(big_value);
-                    return;
-                }
-                start++;
-                char *end = strchr(start, '"');
-                if (!end) {
-                    send_to_channel("Missing closing quote for LOAD");
-                    mpz_clear(big_value);
-                    return;
-                }
-                long int len = end - start;
-                char filename[MAX_STRING_SIZE];
-                strncpy(filename, start, len);
-                filename[len] = '\0';
-                FILE *file = fopen(filename, "r");
-                if (!file) {
-                    char msg[512];
-                    snprintf(msg, sizeof(msg), "Cannot open file: %s", filename);
-                    send_to_channel(msg);
-                } else {
-                    char line[MAX_STRING_SIZE];
-                    while (fgets(line, sizeof(line), file)) {
-                        line[strcspn(line, "\n")] = 0;
-                        interpret(line, stack);
-                    }
-                    fclose(file);
-                }
-                saveptr = end + 1;
+    char *start = saveptr;
+    while (*start && (*start == ' ' || *start == '\t')) start++; // Ignore les espaces avant le nom du fichier
+    if (*start != '"') {
+        send_to_channel("LOAD expects a quoted filename");
+        mpz_clear(big_value);
+        return;
+    }
+    start++; // Passe le guillemet ouvrant
+    char *end = strchr(start, '"');
+    if (!end) {
+        send_to_channel("Missing closing quote for LOAD");
+        mpz_clear(big_value);
+        return;
+    }
+    long int len = end - start;
+    char filename[MAX_STRING_SIZE];
+    strncpy(filename, start, len);
+    filename[len] = '\0'; // Termine la chaîne du nom de fichier
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "Cannot open file: %s", filename);
+        send_to_channel(msg);
+    } else {
+        // Calcule la taille du fichier
+        fseek(file, 0, SEEK_END);
+        long file_size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+        // Alloue un tampon pour tout le contenu
+        char *file_content = malloc(file_size + 1);
+        if (!file_content) {
+            send_to_channel("LOAD: Memory allocation failed");
+            fclose(file);
+            return;
+        }
+        fread(file_content, 1, file_size, file);
+        file_content[file_size] = '\0'; // Termine la chaîne
+        // Passe tout le contenu à interpret
+        interpret(file_content, stack);
+        free(file_content);
+        fclose(file);
+    }
+    saveptr = end + 1;
             } else if (strcmp(token, ".\"") == 0) {
                 char *start = saveptr;
                 char *end = strchr(start, '"');
