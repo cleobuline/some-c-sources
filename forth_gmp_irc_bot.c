@@ -18,7 +18,7 @@
 #define MPZ_POOL_SIZE 3
 
 #define BOT_NAME "ForthBot"
-#define CHANNEL "#labynet"
+#define CHANNEL "##forth"
 
 typedef enum {
     OP_PUSH, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_DUP, OP_SWAP, OP_OVER,
@@ -1499,7 +1499,7 @@ if (strcmp(token, "(") == 0) {
         *compile_error = 1;
         return;
     }
-    int index = findCompiledWordIndex(next_token);
+     int index = findCompiledWordIndex(next_token);
     if (index >= 0) {
         instr.opcode = OP_SEE;
         instr.operand = index;
@@ -1534,6 +1534,93 @@ if (strcmp(token, "(") == 0) {
     currentWord.code[currentWord.code_length++] = instr;
     } else if (strcmp(token, "&") == 0) {
     instr.opcode = OP_BIT_AND;
+    currentWord.code[currentWord.code_length++] = instr;
+    } else if (strcmp(token, "LSHIFT") == 0) {
+    instr.opcode = OP_LSHIFT;
+    currentWord.code[currentWord.code_length++] = instr;
+
+    } else if (strcmp(token, "RSHIFT") == 0) {
+    instr.opcode = OP_RSHIFT;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "|") == 0) {
+    instr.opcode = OP_BIT_OR;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "^") == 0) {
+    instr.opcode = OP_BIT_XOR;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "~") == 0) {
+    instr.opcode = OP_BIT_NOT;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "CREATE") == 0) {
+    char *next_token = strtok_r(NULL, " \t\n", input_rest);
+    if (!next_token) {
+        send_to_channel("CREATE requires a name");
+        *compile_error = 1;
+        return;
+    }
+    instr.opcode = OP_CREATE;
+    instr.operand = currentWord.string_count;
+    currentWord.strings[currentWord.string_count++] = strdup(next_token);
+    currentWord.code[currentWord.code_length++] = instr;
+    return;
+} else if (strcmp(token, "ALLOT") == 0) {
+    instr.opcode = OP_ALLOT;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "ROLL") == 0) {
+    instr.opcode = OP_ROLL;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "+!") == 0) {
+    instr.opcode = OP_PLUSSTORE;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "DEPTH") == 0) {
+    instr.opcode = OP_DEPTH;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "TOP") == 0) {
+    instr.opcode = OP_TOP;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "WORDS") == 0) {
+    instr.opcode = OP_WORDS;
+    currentWord.code[currentWord.code_length++] = instr;
+} else if (strcmp(token, "FORGET") == 0) {
+    char *next_token = strtok_r(NULL, " \t\n", input_rest);
+    if (!next_token) {
+        send_to_channel("FORGET requires a word name");
+        *compile_error = 1;
+        return;
+    }
+    int index = findCompiledWordIndex(next_token);
+    if (index >= 0) {
+        instr.opcode = OP_FORGET;
+        instr.operand = index;
+        currentWord.code[currentWord.code_length++] = instr;
+    } else {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "FORGET: Unknown word: %s", next_token);
+        send_to_channel(msg);
+        *compile_error = 1;
+    }
+    return;
+    } else if (strcmp(token, ".\"") == 0) {
+    char *start = *input_rest;
+    char *end = strchr(start, '"');
+    if (!end) {
+        send_to_channel("Missing closing quote for .\"");
+        *compile_error = 1;
+        return;
+    }
+    long int len = end - start;
+    char *str = malloc(len + 1);
+    strncpy(str, start, len);
+    str[len] = '\0';
+    instr.opcode = OP_DOT_QUOTE;
+    instr.operand = currentWord.string_count;
+    currentWord.strings[currentWord.string_count++] = str;
+    currentWord.code[currentWord.code_length++] = instr;
+    *input_rest = end + 1; // Avance après le " fermant
+    while (**input_rest == ' ' || **input_rest == '\t') (*input_rest)++; // Passe les espaces
+    return;
+        } else if (strcmp(token, "CLOCK") == 0) {
+    instr.opcode = OP_CLOCK;
     currentWord.code[currentWord.code_length++] = instr;
     } else {
         long int index = findCompiledWordIndex(token);
@@ -2035,7 +2122,7 @@ void irc_connect(Stack *stack) {
     struct sockaddr_in server;
     server.sin_family = AF_INET;
     server.sin_port = htons(6667);
-    server.sin_addr.s_addr = inet_addr("213.165.83.201"); 
+    server.sin_addr.s_addr = inet_addr("94.125.182.252"); 
 
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {
         printf("Connection to labynet.fr failed\n");
