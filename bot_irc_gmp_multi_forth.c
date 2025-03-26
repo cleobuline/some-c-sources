@@ -9,7 +9,7 @@
 #include <time.h>
 
 #define STACK_SIZE 1000
-#define DICT_SIZE 300
+#define DICT_SIZE 100
 #define WORD_CODE_SIZE 512
 #define CONTROL_STACK_SIZE 100
 #define VAR_SIZE 100
@@ -19,8 +19,8 @@
 
 #define SERVER "94.125.182.252"
 #define PORT 6667
-#define BOT_NAME "mforth"
-#define USER "mforth"
+#define BOT_NAME "mfoth"
+#define USER "mfoth"
 #define CHANNEL "##forth"
 
 // Structure pour une instruction Forth
@@ -35,8 +35,8 @@ typedef enum {
     OP_WORDS,OP_LOAD, OP_FORGET, OP_VARIABLE, OP_FETCH, OP_STORE,
     OP_PICK, OP_ROLL, OP_PLUSSTORE, OP_DEPTH, OP_TOP, OP_NIP, OP_MOD,
     OP_CREATE, OP_ALLOT, OP_RECURSE, OP_IRC_CONNECT, OP_IRC_SEND, OP_EMIT,
-    OP_STRING, OP_QUOTE, OP_PRINT, OP_STORE_STRING, OP_AGAIN,
-    OP_TO_R, OP_FROM_R, OP_R_FETCH, OP_UNTIL,OP_CLEAR_STACK,OP_CLOCK,OP_SEE
+    OP_STRING, OP_QUOTE, OP_PRINT, OP_AGAIN,
+    OP_TO_R, OP_FROM_R, OP_R_FETCH, OP_UNTIL,OP_CLEAR_STACK,OP_CLOCK,OP_SEE,OP_2DROP
 } OpCode;
 
 typedef struct {
@@ -45,13 +45,13 @@ typedef struct {
 } Instruction;
 
 
-// Structure pour un mot Forth compilé
 typedef struct {
     char *name;
     Instruction code[WORD_CODE_SIZE];
     long int code_length;
     char *strings[WORD_CODE_SIZE];
     long int string_count;
+    int immediate; // Ajouter cette ligne pour marquer les mots immédiats
 } CompiledWord;
 
 // Structure pour une pile Forth
@@ -196,6 +196,7 @@ void initEnv(Env *env, const char *nick) {
         env->dictionary[i].name = NULL;
         env->dictionary[i].code_length = 0;
         env->dictionary[i].string_count = 0;
+        env->dictionary[i].immediate = 0; // Ajouter cette ligne pour initialiser à non immédiat
     }
 
     env->memory_count = 0;
@@ -544,7 +545,18 @@ void initDictionary(Env *env) {
 	env->dictionary[env->dict_count].name = strdup("EMIT");  env->dictionary[env->dict_count].code[0].opcode = OP_EMIT; env->dictionary[env->dict_count].code_length = 1;  env->dict_count++;
 	env->dictionary[env->dict_count].name = strdup("CR");  env->dictionary[env->dict_count].code[0].opcode = OP_CR; env->dictionary[env->dict_count].code_length = 1;  env->dict_count++;
 	env->dictionary[env->dict_count].name = strdup("CLEAR-STACK");  env->dictionary[env->dict_count].code[0].opcode = OP_CLEAR_STACK; env->dictionary[env->dict_count].code_length = 1;  env->dict_count++;
-	// env->dictionary[env->dict_count].name = strdup("SEE");  env->dictionary[env->dict_count].code[0].opcode = OP_SEE; env->dictionary[env->dict_count].code_length = 1;  env->dict_count++;
+    env->dictionary[env->dict_count].name = strdup("PRINT");  env->dictionary[env->dict_count].code[0].opcode = OP_PRINT; env->dictionary[env->dict_count].code_length = 1;  env->dict_count++;
+env->dictionary[env->dict_count].name = strdup("FORGET");
+env->dictionary[env->dict_count].code[0].opcode = OP_FORGET;
+env->dictionary[env->dict_count].code_length = 1;
+env->dictionary[env->dict_count].immediate = 1; // Ajouter cette ligne
+env->dict_count++;
+env->dictionary[env->dict_count].name = strdup("STRING");
+    env->dictionary[env->dict_count].code[0].opcode = OP_STRING;
+    env->dictionary[env->dict_count].code_length = 1;
+    env->dictionary[env->dict_count].immediate = 1; // Marquer STRING comme immédiat
+    env->dict_count++;    env->dictionary[env->dict_count].name = strdup("\"");  env->dictionary[env->dict_count].code[0].opcode = OP_QUOTE; env->dictionary[env->dict_count].code_length = 1;  env->dict_count++;
+       env->dictionary[env->dict_count].name = strdup("2DROP");  env->dictionary[env->dict_count].code[0].opcode = OP_2DROP; env->dictionary[env->dict_count].code_length = 1;  env->dict_count++;
 
  // Ajouter d'autres mots au besoin
 }
@@ -667,6 +679,14 @@ void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledW
         }
     }  
     break;
+    case OP_2DROP:
+    if (stack->top >= 1) {
+        pop(stack, mpz_pool[0]); // Dépile le premier élément
+        pop(stack, mpz_pool[0]); // Dépile le second élément
+    } else {
+        set_error("2DROP: Stack underflow");
+    }
+    break;
         case OP_EQ:
             pop(stack, *b);
             pop(stack, *a);
@@ -785,96 +805,90 @@ case OP_VARIABLE:
     }
     break;
 case OP_STORE:  // !
+
     if (stack->top >= 1) {
-        mpz_t value, base_addr, offset;
-        mpz_init(value);
-        mpz_init(base_addr);
-        mpz_init(offset);
-        pop(stack, base_addr);  // Index de base (TOTO, NUMS, ZAZA)
-        int base_idx = mpz_get_si(base_addr);
-        if (base_idx < 0 || base_idx >= currentenv->memory_count) {
-            set_error("Invalid variable index for !");
-            push(stack, base_addr);
-        } else if (currentenv->memory[base_idx].type == MEMORY_VARIABLE) {
-            // Cas VARIABLE : juste une valeur
-            if (stack->top >= 0) {
-                pop(stack, value);
-                mpz_set(currentenv->memory[base_idx].values[0], value);
-            } else {
-                set_error("!: Stack underflow for variable value");
-                push(stack, base_addr);
-            }
-        } else if (currentenv->memory[base_idx].type == MEMORY_ARRAY) {
-            // Cas ARRAY : offset et valeur
-            if (stack->top >= 1) {
-                pop(stack, offset);
-                pop(stack, value);
-                int off = mpz_get_si(offset);
-                if (off >= 0 && off < currentenv->memory[base_idx].size) {
-                    mpz_set(currentenv->memory[base_idx].values[off], value);
+        pop(stack, *result); // 2 (index de TOTO)
+        int idx = mpz_get_si(*result);
+        if (idx < 0 || idx >= currentenv->memory_count) {
+            set_error("STORE: Invalid memory index");
+            push(stack, *result);
+        } else if (currentenv->memory[idx].type == MEMORY_STRING) {
+            pop(stack, *a); // 0 (index de "hello")
+            if (mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) <= currentenv->string_stack_top) {
+                char *str = currentenv->string_stack[mpz_get_si(*a)]; // "hello"
+                if (str) {
+                    if (currentenv->memory[idx].string) free(currentenv->memory[idx].string);
+                    currentenv->memory[idx].string = strdup(str); // Devrait être "hello"
+                    currentenv->string_stack[mpz_get_si(*a)] = NULL;
+                    for (int i = mpz_get_si(*a); i < currentenv->string_stack_top; i++) {
+                        currentenv->string_stack[i] = currentenv->string_stack[i + 1];
+                    }
+                    currentenv->string_stack_top--; // Décrémente à -1 si c’était 0
                 } else {
-                    char error_msg[512];
-                    snprintf(error_msg, sizeof(error_msg), "Invalid offset %d for array ! (size: %d)", off, currentenv->memory[base_idx].size);
-                    set_error(error_msg);
-                    push(stack, value);
-                    push(stack, offset);
-                    push(stack, base_addr);
+                    set_error("STORE: No string at stack index");
                 }
             } else {
-                set_error("!: Stack underflow for array offset and value");
-                push(stack, base_addr);
+                set_error("STORE: Invalid string stack index");
+                push(stack, *a);
+                push(stack, *result);
             }
-            mpz_clear(offset);
+        } else if (currentenv->memory[idx].type == MEMORY_VARIABLE) {
+            pop(stack, *a);
+            mpz_set(currentenv->memory[idx].values[0], *a);
+        } else if (currentenv->memory[idx].type == MEMORY_ARRAY) {
+            // Gestion des tableaux (inchangée)
+            pop(stack, *b); // offset
+            pop(stack, *a); // valeur
+            int off = mpz_get_si(*b);
+            if (off >= 0 && off < currentenv->memory[idx].size) {
+                mpz_set(currentenv->memory[idx].values[off], *a);
+            } else {
+                set_error("STORE: Invalid array offset");
+                push(stack, *a);
+                push(stack, *b);
+                push(stack, *result);
+            }
         } else {
-            set_error("!: Unknown memory type");
-            push(stack, base_addr);
+            set_error("STORE: Unknown memory type");
+            push(stack, *result);
         }
-        mpz_clear(value);
-        mpz_clear(base_addr);
     } else {
-        set_error("!: Stack underflow");
+        set_error("STORE: Stack underflow");
     }
     break;
-
 case OP_FETCH:  // @
     if (stack->top >= 0) {
-        mpz_t base_addr, offset;
-        mpz_init(base_addr);
-        mpz_init(offset);
-        pop(stack, base_addr);  // Index de base
-        int base_idx = mpz_get_si(base_addr);
-        if (base_idx < 0 || base_idx >= currentenv->memory_count) {
-            set_error("Invalid variable index for @");
-            push(stack, base_addr);
-        } else if (currentenv->memory[base_idx].type == MEMORY_VARIABLE) {
-            // Cas VARIABLE : pas d’offset
-            push(stack, currentenv->memory[base_idx].values[0]);
-        } else if (currentenv->memory[base_idx].type == MEMORY_ARRAY) {
-            // Cas ARRAY : offset requis
-            if (stack->top >= 0) {
-                pop(stack, offset);
-                int off = mpz_get_si(offset);
-                if (off >= 0 && off < currentenv->memory[base_idx].size) {
-                    push(stack, currentenv->memory[base_idx].values[off]);
-                } else {
-                    char error_msg[512];
-                    snprintf(error_msg, sizeof(error_msg), "Invalid offset %d for array @ (size: %d)", off, currentenv->memory[base_idx].size);
-                    set_error(error_msg);
-                    push(stack, offset);
-                    push(stack, base_addr);
-                }
+        pop(stack, *result);
+        int idx = mpz_get_si(*result);
+        if (idx < 0 || idx >= currentenv->memory_count) {
+            set_error("FETCH: Invalid memory index");
+            push(stack, *result);
+        } else if (currentenv->memory[idx].type == MEMORY_STRING) {
+            if (currentenv->memory[idx].string) {
+                push_string(strdup(currentenv->memory[idx].string)); // Nouvelle copie sur string_stack
+                mpz_set_si(*result, currentenv->string_stack_top);
+                push(stack, *result); // Pousse l'index
             } else {
-                set_error("@: Stack underflow for array offset");
-                push(stack, base_addr);
+                set_error("FETCH: No string in memory");
             }
-            mpz_clear(offset);
+        } else if (currentenv->memory[idx].type == MEMORY_VARIABLE) {
+            push(stack, currentenv->memory[idx].values[0]);
+        } else if (currentenv->memory[idx].type == MEMORY_ARRAY) {
+            pop(stack, *a); // offset
+            int off = mpz_get_si(*a);
+            if (off >= 0 && off < currentenv->memory[idx].size) {
+                push(stack, currentenv->memory[idx].values[off]);
+            } else {
+                set_error("FETCH: Invalid array offset");
+                push(stack, *a);
+                push(stack, *result);
+            }
         } else {
-            set_error("@: Unknown memory type");
-            push(stack, base_addr);
+            set_error("FETCH: Unknown memory type");
+            push(stack, *result);
         }
-        mpz_clear(base_addr);
     } else {
-        set_error("@: Stack underflow");
+        set_error("FETCH: Stack underflow");
     }
     break;
            case OP_IRC_SEND:
@@ -1074,7 +1088,70 @@ case OP_REPEAT:
             mpz_fdiv_q_2exp(*result, *a, mpz_get_ui(*b));
             push(stack, *result);
             break;
+case OP_FORGET:
+    if (instr.operand >= 0 && instr.operand < word->string_count && word->strings[instr.operand]) {
+        char *word_to_forget = word->strings[instr.operand];
+        int forget_idx = findCompiledWordIndex(word_to_forget);
+        if (forget_idx >= 0) {
+            // Libérer tous les mots du dictionnaire à partir de forget_idx
+            for (int i = forget_idx; i < currentenv->dict_count; i++) {
+                if (currentenv->dictionary[i].name) {
+                    free(currentenv->dictionary[i].name);
+                    currentenv->dictionary[i].name = NULL;
+                }
+                for (int j = 0; j < currentenv->dictionary[i].string_count; j++) {
+                    if (currentenv->dictionary[i].strings[j]) {
+                        free(currentenv->dictionary[i].strings[j]);
+                        currentenv->dictionary[i].strings[j] = NULL;
+                    }
+                }
+                currentenv->dictionary[i].code_length = 0;
+                currentenv->dictionary[i].string_count = 0;
+            }
+            long int old_dict_count = currentenv->dict_count;
+            currentenv->dict_count = forget_idx;
 
+            // Ajuster la mémoire (variables, tableaux, chaînes)
+            int new_memory_count = 0;
+            for (int i = 0; i < currentenv->memory_count; i++) {
+                int mem_word_idx = findCompiledWordIndex(currentenv->memory[i].name);
+                if (mem_word_idx >= forget_idx || mem_word_idx < 0) { // Mot associé oublié ou orphelin
+                    if (currentenv->memory[i].name) free(currentenv->memory[i].name);
+                    if (currentenv->memory[i].type == MEMORY_VARIABLE || currentenv->memory[i].type == MEMORY_ARRAY) {
+                        if (currentenv->memory[i].values) {
+                            for (int j = 0; j < currentenv->memory[i].size; j++) {
+                                mpz_clear(currentenv->memory[i].values[j]);
+                            }
+                            free(currentenv->memory[i].values);
+                        }
+                    } else if (currentenv->memory[i].type == MEMORY_STRING) {
+                        if (currentenv->memory[i].string) free(currentenv->memory[i].string);
+                    }
+                } else {
+                    // Conserver les entrées mémoire antérieures à forget_idx
+                    if (new_memory_count != i) {
+                        currentenv->memory[new_memory_count] = currentenv->memory[i];
+                    }
+                    new_memory_count++;
+                }
+            }
+            currentenv->memory_count = new_memory_count;
+
+            // Message de confirmation
+            char msg[512];
+            snprintf(msg, sizeof(msg), "Forgot everything from '%s' at index %d (dict was %ld, now %ld; mem was %ld, now %ld)", 
+                     word_to_forget, forget_idx, old_dict_count, currentenv->dict_count, 
+                     new_memory_count + (old_dict_count - forget_idx), currentenv->memory_count);
+            send_to_channel(msg);
+        } else {
+            char msg[512];
+            snprintf(msg, sizeof(msg), "FORGET: Unknown word: %s", word_to_forget);
+            set_error(msg);
+        }
+    } else {
+        set_error("FORGET: Invalid word name");
+    }
+    break;
         case OP_WORDS:
     if (currentenv->dict_count > 0) {
         char words_msg[512] = "";
@@ -1100,6 +1177,7 @@ case OP_REPEAT:
         send_to_channel("Dictionary empty");
     }
     break;
+    
 case OP_LOAD: {
     char *filename = NULL;
     if (instr.operand >= 0 && instr.operand < word->string_count && word->strings[instr.operand]) {
@@ -1124,10 +1202,7 @@ case OP_LOAD: {
     free(filename);
     break;
 }
-        case OP_FORGET:
-            // À implémenter : supprimer un mot du dictionnaire
-            set_error("FORGET not implemented");
-            break;
+ 
         case OP_PICK:
             pop(stack, *a);
             int n = mpz_get_si(*a);
@@ -1203,25 +1278,58 @@ case OP_LOAD: {
             } else set_error("ALLOT: Invalid memory");
             break;
  
-        case OP_STRING:
-            if (instr.operand >= 0 && instr.operand < word->string_count && word->strings[instr.operand]) {
-                push_string(strdup(word->strings[instr.operand]));
-            } else set_error("Invalid string");
-            break;
-        case OP_QUOTE:
-            // À implémenter : gérer " pour les chaînes
-            set_error("QUOTE not implemented");
-            break;
-        case OP_PRINT:
-            pop(stack, *a);
-            if (instr.operand >= 0 && instr.operand < word->string_count && word->strings[instr.operand]) {
-                send_to_channel(word->strings[instr.operand]);
-            } else set_error("Invalid print string");
-            break;
-        case OP_STORE_STRING:
-            // À implémenter : stocker une chaîne dans la mémoire
-            set_error("STORE_STRING not implemented");
-            break;
+case OP_STRING:
+    if (currentenv->memory_count < VAR_SIZE) {
+        if (instr.operand >= 0 && instr.operand < word->string_count && word->strings[instr.operand]) {
+            char *name = word->strings[instr.operand];
+            int mem_idx = currentenv->memory_count;
+            currentenv->memory[mem_idx].name = strdup(name);
+            currentenv->memory[mem_idx].type = MEMORY_STRING;
+            currentenv->memory[mem_idx].string = NULL; // Chaîne vide par défaut
+            currentenv->memory[mem_idx].size = 0; // Pas utilisé pour MEMORY_STRING
+            currentenv->memory_count++;
+
+            // Ajouter un mot dans le dictionnaire pour pousser l'index mémoire
+            if (currentenv->dict_count < DICT_SIZE) {
+                int dict_idx = currentenv->dict_count;
+                currentenv->dictionary[dict_idx].name = strdup(name);
+                currentenv->dictionary[dict_idx].code[0].opcode = OP_PUSH;
+                currentenv->dictionary[dict_idx].code[0].operand = mem_idx;
+                currentenv->dictionary[dict_idx].code_length = 1;
+                currentenv->dict_count++;
+            } else {
+                set_error("STRING: Dictionary full");
+            }
+        } else {
+            set_error("STRING: Invalid name");
+        }
+    } else {
+        set_error("STRING: Memory full");
+    }
+    break;
+case OP_QUOTE:
+    if (instr.operand >= 0 && instr.operand < word->string_count && word->strings[instr.operand]) {
+        char *str = word->strings[instr.operand]; // Pas besoin de dupliquer ici, déjà alloué
+        push_string(str); // Pousse sur string_stack
+        mpz_set_si(*result, currentenv->string_stack_top); // Index sur la pile principale
+        push(stack, *result);
+    } else {
+        set_error("QUOTE: Invalid string index");
+    }
+    break;
+case OP_PRINT:
+    pop(stack, *a);
+    if (mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) <= currentenv->string_stack_top) {
+        char *str = currentenv->string_stack[mpz_get_si(*a)];
+        if (str) {
+            send_to_channel(str);
+        } else {
+            set_error("PRINT: No string at index");
+        }
+    } else {
+        set_error("PRINT: Invalid string stack index");
+    }
+    break;
 		case OP_CLEAR_STACK:
             stack->top = -1;  // Vide la pile en réinitialisant le sommet
             break;
@@ -1236,26 +1344,19 @@ case OP_LOAD: {
     }
 }
 void interpret(char *input, Stack *stack) {
-    if (!currentenv) {
-        printf("No currentenv in interpret!\n");
-        send_to_channel("Error: No current environment");
-        return;
-    }
- 
-    currentenv->error_flag = 0;  
-     
-    currentenv->compile_error = 0; 
-     
-     
-
+    if (!currentenv) return;
+    currentenv->error_flag = 0;
+    currentenv->compile_error = 0;
     char *saveptr;
     char *token = strtok_r(input, " \t\n", &saveptr);
     while (token && !currentenv->error_flag) {
+        //char debug_msg[512];
+        // snprintf(debug_msg, sizeof(debug_msg), "Token: '%s', stack top=%ld, saveptr='%s'",   token, currentenv->main_stack.top, saveptr);
+        // send_to_channel(debug_msg);
         if (strcmp(token, "(") == 0) {
-            // Sauter jusqu'à )
             char *end = strstr(saveptr, ")");
             if (end) saveptr = end + 1;
-            else saveptr = NULL; // Fin de ligne
+            else saveptr = NULL;
             token = strtok_r(NULL, " \t\n", &saveptr);
             continue;
         }
@@ -1263,12 +1364,72 @@ void interpret(char *input, Stack *stack) {
         token = strtok_r(NULL, " \t\n", &saveptr);
     }
 }
- 
 void compileToken(char *token, char **input_rest, Env *env) {
-    Instruction instr = {0}; // Initialisation à zéro pour éviter les surprises
+    Instruction instr = {0};
     if (!env || env->compile_error) return;
 
-    // Début d'une définition
+    // Vérification des mots immédiats (exécutés dans tous les modes)
+    int idx = findCompiledWordIndex(token);
+    if (idx >= 0 && env->dictionary[idx].immediate) {
+        if (strcmp(token, "STRING") == 0) {
+            char *next_token = strtok_r(NULL, " \t\n", input_rest);
+            if (!next_token) {
+                set_error("STRING requires a name");
+                env->compile_error = 1;
+                return;
+            }
+            if (findCompiledWordIndex(next_token) >= 0) {
+                char msg[512];
+                snprintf(msg, sizeof(msg), "STRING: '%s' already defined", next_token);
+                set_error(msg);
+                env->compile_error = 1;
+                return;
+            }
+            if (env->memory_count >= VAR_SIZE) {
+                set_error("STRING: Memory full");
+                env->compile_error = 1;
+                return;
+            }
+            if (env->dict_count >= DICT_SIZE) {
+                set_error("STRING: Dictionary full");
+                env->compile_error = 1;
+                return;
+            }
+            int mem_idx = env->memory_count;
+            env->memory[mem_idx].name = strdup(next_token);
+            env->memory[mem_idx].type = MEMORY_STRING;
+            env->memory[mem_idx].string = NULL;
+            env->memory[mem_idx].size = 0;
+            env->memory_count++;
+            int dict_idx = env->dict_count;
+            env->dictionary[dict_idx].name = strdup(next_token);
+            env->dictionary[dict_idx].code[0].opcode = OP_PUSH;
+            env->dictionary[dict_idx].code[0].operand = mem_idx;
+            env->dictionary[dict_idx].code_length = 1;
+            env->dictionary[dict_idx].string_count = 0;
+            env->dictionary[dict_idx].immediate = 0;
+            env->dict_count++;
+        } else if (strcmp(token, "FORGET") == 0) {
+            char *next_token = strtok_r(NULL, " \t\n", input_rest);
+            if (!next_token) {
+                set_error("FORGET requires a word name");
+                env->compile_error = 1;
+                return;
+            }
+            CompiledWord temp_word = {0};
+            temp_word.strings[0] = strdup(next_token);
+            temp_word.string_count = 1;
+            instr.opcode = OP_FORGET;
+            instr.operand = 0; // Index 0 dans temp_word.strings
+            executeInstruction(instr, &env->main_stack, NULL, &temp_word, -1);
+            free(temp_word.strings[0]);
+            return;
+        }
+        return; // Sortir après exécution immédiate
+    }
+
+    // Reste de la fonction inchangé...
+    // Début d’une définition
     if (strcmp(token, ":") == 0) {
         char *next_token = strtok_r(NULL, " \t\n", input_rest);
         if (!next_token) {
@@ -1298,7 +1459,7 @@ void compileToken(char *token, char **input_rest, Env *env) {
         return;
     }
 
-    // Fin d'une définition
+    // Fin d’une définition
     if (strcmp(token, ";") == 0) {
         if (!env->compiling) {
             set_error("Extra ;");
@@ -1306,12 +1467,12 @@ void compileToken(char *token, char **input_rest, Env *env) {
             return;
         }
         if (env->control_stack_top > 0) {
-        set_error("Unmatched control structures");
-        env->compile_error = 1;
-        env->control_stack_top = 0;
-        env->compiling = 0;
-        return;
-    }
+            set_error("Unmatched control structures");
+            env->compile_error = 1;
+            env->control_stack_top = 0;
+            env->compiling = 0;
+            return;
+        }
         instr.opcode = OP_END;
         env->currentWord.code[env->currentWord.code_length++] = instr;
         if (env->current_word_index >= 0 && env->current_word_index < DICT_SIZE) {
@@ -1343,7 +1504,9 @@ void compileToken(char *token, char **input_rest, Env *env) {
         env->currentWord.code[env->currentWord.code_length++] = instr;
         return;
     }
-if (strcmp(token, "SEE") == 0) {
+
+    // Affichage d’une définition avec SEE
+    if (strcmp(token, "SEE") == 0) {
         char *next_token = strtok_r(NULL, " \t\n", input_rest);
         if (!next_token) {
             send_to_channel("SEE requires a word name");
@@ -1359,9 +1522,10 @@ if (strcmp(token, "SEE") == 0) {
             send_to_channel(msg);
             env->compile_error = 1;
         }
-        return; // Sortir immédiatement après SEE
+        return;
     }
-    // Mode compilation : on construit le mot
+
+    // Mode compilation : construire le mot
     if (env->compiling) {
         // Instructions Forth de base
         if (strcmp(token, "DUP") == 0) instr.opcode = OP_DUP;
@@ -1393,44 +1557,35 @@ if (strcmp(token, "SEE") == 0) {
         else if (strcmp(token, "J") == 0) instr.opcode = OP_J;
         else if (strcmp(token, "DO") == 0) instr.opcode = OP_DO;
         else if (strcmp(token, "LOOP") == 0) instr.opcode = OP_LOOP;
-       else if (strcmp(token, "+LOOP") == 0) instr.opcode = OP_PLUS_LOOP;
-       else if (strcmp(token, "PICK") == 0) instr.opcode = OP_PICK;
+        else if (strcmp(token, "+LOOP") == 0) instr.opcode = OP_PLUS_LOOP;
+        else if (strcmp(token, "PICK") == 0) instr.opcode = OP_PICK;
         else if (strcmp(token, "EXIT") == 0) instr.opcode = OP_EXIT;
         else if (strcmp(token, "CLOCK") == 0) instr.opcode = OP_CLOCK;
         else if (strcmp(token, "CLEAR-STACK") == 0) instr.opcode = OP_CLEAR_STACK;
         else if (strcmp(token, "WORDS") == 0) instr.opcode = OP_WORDS;
 
         // Gestion de ."
-else if (strcmp(token, ".\"") == 0) {
-    if (env->compiling) {
-        char *start = *input_rest;
-        char *end = strchr(start, '"');
-        if (!end) {
-            set_error(".\" expects a string ending with \"");
-            env->compile_error = 1;
+        else if (strcmp(token, ".\"") == 0) {
+            char *start = *input_rest;
+            char *end = strchr(start, '"');
+            if (!end) {
+                set_error(".\" expects a string ending with \"");
+                env->compile_error = 1;
+                return;
+            }
+            long int len = end - start;
+            char *str = malloc(len + 1);
+            strncpy(str, start, len);
+            str[len] = '\0';
+            instr.opcode = OP_DOT_QUOTE;
+            instr.operand = env->currentWord.string_count;
+            env->currentWord.strings[env->currentWord.string_count++] = str;
+            env->currentWord.code[env->currentWord.code_length++] = instr;
+            *input_rest = end + 1;
+            while (**input_rest == ' ' || **input_rest == '\t') (*input_rest)++;
             return;
         }
-        long int len = end - start;
-        char *str = malloc(len + 1);
-        strncpy(str, start, len);
-        str[len] = '\0';
-        instr.opcode = OP_DOT_QUOTE;
-        instr.operand = env->currentWord.string_count;
-        env->currentWord.strings[env->currentWord.string_count++] = str;
-        env->currentWord.code[env->currentWord.code_length++] = instr;
-        *input_rest = end + 1;
-        while (**input_rest == ' ' || **input_rest == '\t') (*input_rest)++;
-        return; // S’assurer qu’on sort après la compilation
-    } else {
-        char *next_token = strtok_r(NULL, "\"", input_rest);
-        if (!next_token) {
-            set_error(".\" expects a string ending with \"");
-            return;
-        }
-        send_to_channel(next_token);
-        strtok_r(NULL, " \t\n", input_rest);
-    }
-} 
+
         // Gestion de VARIABLE
         else if (strcmp(token, "VARIABLE") == 0) {
             char *next_token = strtok_r(NULL, " \t\n", input_rest);
@@ -1444,7 +1599,44 @@ else if (strcmp(token, ".\"") == 0) {
             env->currentWord.strings[env->currentWord.string_count++] = strdup(next_token);
         }
 
-        // Structures de contrôle
+        // Gestion de "
+else if (strcmp(token, "\"") == 0) {
+    char *start = *input_rest;
+    char *end = strchr(start, '"');
+    if (!end) {
+        set_error("Missing closing quote for \"");
+        env->compile_error = 1;
+        return;
+    }
+    long int len = end - start;
+    char *str = malloc(len + 1);
+    strncpy(str, start, len);
+    str[len] = '\0';
+    if (env->compiling) {
+        instr.opcode = OP_QUOTE;
+        instr.operand = env->currentWord.string_count;
+        env->currentWord.strings[env->currentWord.string_count++] = str;
+        env->currentWord.code[env->currentWord.code_length++] = instr;
+    } else {
+        push_string(str);
+        mpz_set_si(mpz_pool[0], env->string_stack_top);
+        push(&env->main_stack, mpz_pool[0]);
+        // char debug_msg[512];
+        // snprintf(debug_msg, sizeof(debug_msg), "Pushed string='%s' at index=%ld, stack top=%ld",   str, env->string_stack_top, env->main_stack.top);
+        // send_to_channel(debug_msg);
+    }
+    *input_rest = end + 1;
+    while (**input_rest == ' ' || **input_rest == '\t') (*input_rest)++;
+    // char debug_msg[512]; snprintf(debug_msg, sizeof(debug_msg), "After QUOTE: string='%s', next='%s'", str, *input_rest);
+    // send_to_channel(debug_msg);
+    // Forcer le traitement du token suivant
+    token = strtok_r(NULL, " \t\n", input_rest);
+    if (token) {
+        // snprintf(debug_msg, sizeof(debug_msg), "Next token: '%s'", token);
+        // send_to_channel(debug_msg);
+        compileToken(token, input_rest, env);
+    }
+}    // Structures de contrôle
         else if (strcmp(token, "IF") == 0) {
             if (env->control_stack_top >= CONTROL_STACK_SIZE) {
                 set_error("Control stack overflow");
@@ -1452,7 +1644,7 @@ else if (strcmp(token, ".\"") == 0) {
                 return;
             }
             instr.opcode = OP_BRANCH_FALSE;
-            instr.operand = 0; // À remplir plus tard avec THEN ou ELSE
+            instr.operand = 0; // À remplir avec THEN ou ELSE
             env->control_stack[env->control_stack_top++] = (ControlEntry){CT_IF, env->currentWord.code_length};
             env->currentWord.code[env->currentWord.code_length++] = instr;
             return;
@@ -1472,57 +1664,6 @@ else if (strcmp(token, ".\"") == 0) {
             env->currentWord.code[env->currentWord.code_length++] = instr;
             return;
         }
-        else if (strcmp(token, "BEGIN") == 0) {
-            if (env->control_stack_top >= CONTROL_STACK_SIZE) {
-                set_error("Control stack overflow");
-                env->compile_error = 1;
-                return;
-            }
-            instr.opcode = OP_BEGIN;
-            env->control_stack[env->control_stack_top++] = (ControlEntry){CT_BEGIN, env->currentWord.code_length};
-            env->currentWord.code[env->currentWord.code_length++] = instr;
-            return;
-        }
-
-else if (strcmp(token, "WHILE") == 0) {
-    if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_BEGIN) {
-        set_error("WHILE without BEGIN");
-        env->compile_error = 1;
-        return;
-    }
-    instr.opcode = OP_WHILE;
-    instr.operand = 0; // À remplir avec REPEAT
-    env->control_stack[env->control_stack_top - 1].type = CT_WHILE; // Marquer pour REPEAT
-    env->control_stack[env->control_stack_top - 1].addr = env->currentWord.code_length;
-    env->currentWord.code[env->currentWord.code_length++] = instr;
-    return;
-}
-else if (strcmp(token, "REPEAT") == 0) {
-    if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_WHILE) {
-        set_error("REPEAT without WHILE");
-        env->compile_error = 1;
-        return;
-    }
-    ControlEntry while_entry = env->control_stack[env->control_stack_top - 1];
-    env->currentWord.code[while_entry.addr].operand = env->currentWord.code_length + 1; // Après REPEAT
-    instr.opcode = OP_REPEAT;
-    instr.operand = while_entry.addr - 8; // Retour à BEGIN (ajusté selon la position relative)
-    env->currentWord.code[env->currentWord.code_length++] = instr;
-    env->control_stack_top--;
-    return;
-}
-        else if (strcmp(token, "UNTIL") == 0) {
-            if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_BEGIN) {
-                set_error("UNTIL without BEGIN");
-                env->compile_error = 1;
-                return;
-            }
-            ControlEntry begin_entry = env->control_stack[--env->control_stack_top];
-            instr.opcode = OP_UNTIL;
-            instr.operand = begin_entry.addr;
-            env->currentWord.code[env->currentWord.code_length++] = instr;
-            return;
-        }
         else if (strcmp(token, "THEN") == 0) {
             if (env->control_stack_top <= 0) {
                 set_error("THEN without IF or ELSE");
@@ -1537,6 +1678,56 @@ else if (strcmp(token, "REPEAT") == 0) {
                 env->compile_error = 1;
                 return;
             }
+            return;
+        }
+        else if (strcmp(token, "BEGIN") == 0) {
+            if (env->control_stack_top >= CONTROL_STACK_SIZE) {
+                set_error("Control stack overflow");
+                env->compile_error = 1;
+                return;
+            }
+            instr.opcode = OP_BEGIN;
+            env->control_stack[env->control_stack_top++] = (ControlEntry){CT_BEGIN, env->currentWord.code_length};
+            env->currentWord.code[env->currentWord.code_length++] = instr;
+            return;
+        }
+        else if (strcmp(token, "WHILE") == 0) {
+            if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_BEGIN) {
+                set_error("WHILE without BEGIN");
+                env->compile_error = 1;
+                return;
+            }
+            instr.opcode = OP_WHILE;
+            instr.operand = 0; // À remplir avec REPEAT
+            env->control_stack[env->control_stack_top - 1].type = CT_WHILE;
+            env->control_stack[env->control_stack_top - 1].addr = env->currentWord.code_length;
+            env->currentWord.code[env->currentWord.code_length++] = instr;
+            return;
+        }
+        else if (strcmp(token, "REPEAT") == 0) {
+            if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_WHILE) {
+                set_error("REPEAT without WHILE");
+                env->compile_error = 1;
+                return;
+            }
+            ControlEntry while_entry = env->control_stack[env->control_stack_top - 1];
+            env->currentWord.code[while_entry.addr].operand = env->currentWord.code_length + 1;
+            instr.opcode = OP_REPEAT;
+            instr.operand = while_entry.addr - 8; // Retour à BEGIN
+            env->currentWord.code[env->currentWord.code_length++] = instr;
+            env->control_stack_top--;
+            return;
+        }
+        else if (strcmp(token, "UNTIL") == 0) {
+            if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_BEGIN) {
+                set_error("UNTIL without BEGIN");
+                env->compile_error = 1;
+                return;
+            }
+            ControlEntry begin_entry = env->control_stack[--env->control_stack_top];
+            instr.opcode = OP_UNTIL;
+            instr.operand = begin_entry.addr;
+            env->currentWord.code[env->currentWord.code_length++] = instr;
             return;
         }
 
@@ -1565,7 +1756,7 @@ else if (strcmp(token, "REPEAT") == 0) {
             }
         }
 
-        // Ajouter l'instruction au mot en cours
+        // Ajouter l’instruction au mot en cours
         if (env->currentWord.code_length < WORD_CODE_SIZE) {
             env->currentWord.code[env->currentWord.code_length++] = instr;
         } else {
@@ -1574,15 +1765,14 @@ else if (strcmp(token, "REPEAT") == 0) {
         }
     }
 
-// Mode interprétation
+    // Mode interprétation
     else {
         if (strcmp(token, "LOAD") == 0) {
-            char *next_token = strtok_r(NULL, "\"", input_rest);  // Récupère jusqu'au premier "
+            char *next_token = strtok_r(NULL, "\"", input_rest);
             if (!next_token || *next_token == '\0') {
                 set_error("LOAD: No filename provided");
                 return;
             }
-            // Sauter les espaces avant le nom
             while (*next_token == ' ' || *next_token == '\t') next_token++;
             if (*next_token == '\0') {
                 set_error("LOAD: No filename provided");
@@ -1604,11 +1794,9 @@ else if (strcmp(token, "REPEAT") == 0) {
                 snprintf(error_msg, sizeof(error_msg), "Error: LOAD: Cannot open file '%s'", filename);
                 set_error(error_msg);
             }
-            // Avancer input_rest après le guillemet fermant
             strtok_r(NULL, " \t\n", input_rest);
         }
-    else 
-        if (strcmp(token, "CREATE") == 0) {
+        else if (strcmp(token, "CREATE") == 0) {
             char *next_token = strtok_r(NULL, " \t\n", input_rest);
             if (!next_token) {
                 set_error("CREATE requires a name");
@@ -1622,8 +1810,6 @@ else if (strcmp(token, "REPEAT") == 0) {
                 set_error("Dictionary full");
                 return;
             }
-
-            // 1. Créer l'entrée dans env->memory
             int mem_idx = env->memory_count;
             env->memory[mem_idx].name = strdup(next_token);
             env->memory[mem_idx].type = MEMORY_VARIABLE;
@@ -1631,8 +1817,6 @@ else if (strcmp(token, "REPEAT") == 0) {
             mpz_init_set_ui(env->memory[mem_idx].values[0], 0);
             env->memory[mem_idx].size = 1;
             env->memory_count++;
-
-            // 2. Ajouter un mot dans env->dictionary qui pousse mem_idx
             int dict_idx = env->dict_count;
             env->dictionary[dict_idx].name = strdup(next_token);
             env->dictionary[dict_idx].code[0].opcode = OP_PUSH;
@@ -1640,8 +1824,8 @@ else if (strcmp(token, "REPEAT") == 0) {
             env->dictionary[dict_idx].code_length = 1;
             env->dictionary[dict_idx].string_count = 0;
             env->dict_count++;
-
-        } else if (strcmp(token, "VARIABLE") == 0) {
+        }
+        else if (strcmp(token, "VARIABLE") == 0) {
             char *next_token = strtok_r(NULL, " \t\n", input_rest);
             if (!next_token) {
                 set_error("VARIABLE requires a name");
@@ -1655,8 +1839,6 @@ else if (strcmp(token, "REPEAT") == 0) {
                 set_error("Dictionary full");
                 return;
             }
-
-            // 1. Créer la variable dans env->memory
             int mem_idx = env->memory_count;
             env->memory[mem_idx].name = strdup(next_token);
             env->memory[mem_idx].type = MEMORY_VARIABLE;
@@ -1664,12 +1846,10 @@ else if (strcmp(token, "REPEAT") == 0) {
             mpz_init_set_ui(env->memory[mem_idx].values[0], 0);
             env->memory[mem_idx].size = 1;
             env->memory_count++;
-
-            // 2. Ajouter un mot dans env->dictionary qui pousse mem_idx
             int dict_idx = env->dict_count;
             env->dictionary[dict_idx].name = strdup(next_token);
             env->dictionary[dict_idx].code[0].opcode = OP_PUSH;
-            env->dictionary[dict_idx].code[0].operand = mem_idx; // Pousse l'index de la variable
+            env->dictionary[dict_idx].code[0].operand = mem_idx;
             env->dictionary[dict_idx].code_length = 1;
             env->dictionary[dict_idx].string_count = 0;
             env->dict_count++;
@@ -1683,6 +1863,28 @@ else if (strcmp(token, "REPEAT") == 0) {
             send_to_channel(next_token);
             strtok_r(NULL, " \t\n", input_rest);
         }
+else if (strcmp(token, "\"") == 0) {
+    char *start = *input_rest;
+    char *end = strchr(start, '"');
+    if (!end) {
+        set_error("Missing closing quote for \"");
+        return;
+    }
+    long int len = end - start;
+    char *str = malloc(len + 1);
+    strncpy(str, start, len);
+    str[len] = '\0';
+    push_string(str);
+    mpz_set_si(mpz_pool[0], env->string_stack_top);
+    push(&env->main_stack, mpz_pool[0]);
+    *input_rest = end + 1;
+    while (**input_rest == ' ' || **input_rest == '\t') (*input_rest)++;
+    // Traiter le token suivant immédiatement
+    char *next_token = strtok_r(NULL, " \t\n", input_rest);
+    if (next_token) {
+        compileToken(next_token, input_rest, env);
+    }
+}
         else {
             int idx = findCompiledWordIndex(token);
             if (idx >= 0) {
