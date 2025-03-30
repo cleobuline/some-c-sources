@@ -447,23 +447,26 @@ int findCompiledWordIndex(char *name) {
     return -1;
 }
 
- 
+
 void print_word_definition_irc(int index, Stack *stack) {
     if (!currentenv || index < 0 || index >= currentenv->dictionary.count) {
         send_to_channel("SEE: Unknown word");
         return;
     }
+
     CompiledWord *word = &currentenv->dictionary.words[index];
     char def_msg[512] = "";
     snprintf(def_msg, sizeof(def_msg), ": %s ", word->name);
 
+    // Tableau pour suivre les cibles des branchements (IF, OF, etc.)
     long int branch_targets[WORD_CODE_SIZE];
     int branch_depth = 0;
     int has_semicolon = 0;
 
-    for (int i = 0; i < word->code_length; i++) {
+    for (long int i = 0; i < word->code_length; i++) {
         Instruction instr = word->code[i];
         char instr_str[64] = "";
+
         switch (instr.opcode) {
             case OP_PUSH:
                 if (instr.operand < word->string_count && word->strings[instr.operand]) {
@@ -473,13 +476,92 @@ void print_word_definition_irc(int index, Stack *stack) {
                 }
                 break;
             case OP_CALL:
-                if (instr.operand < currentenv->dictionary.count) {
+                if (instr.operand < currentenv->dictionary.count && currentenv->dictionary.words[instr.operand].name) {
                     snprintf(instr_str, sizeof(instr_str), "%s ", currentenv->dictionary.words[instr.operand].name);
                 } else {
                     snprintf(instr_str, sizeof(instr_str), "(CALL %ld) ", instr.operand);
                 }
                 break;
-            // Autres cas inchangés, juste pour l’exemple
+            case OP_ADD: snprintf(instr_str, sizeof(instr_str), "+ "); break;
+            case OP_SUB: snprintf(instr_str, sizeof(instr_str), "- "); break;
+            case OP_MUL: snprintf(instr_str, sizeof(instr_str), "* "); break;
+            case OP_DIV: snprintf(instr_str, sizeof(instr_str), "/ "); break;
+            case OP_MOD: snprintf(instr_str, sizeof(instr_str), "MOD "); break;
+            case OP_DUP: snprintf(instr_str, sizeof(instr_str), "DUP "); break;
+            case OP_DROP: snprintf(instr_str, sizeof(instr_str), "DROP "); break;
+            case OP_SWAP: snprintf(instr_str, sizeof(instr_str), "SWAP "); break;
+            case OP_OVER: snprintf(instr_str, sizeof(instr_str), "OVER "); break;
+            case OP_ROT: snprintf(instr_str, sizeof(instr_str), "ROT "); break;
+            case OP_TO_R: snprintf(instr_str, sizeof(instr_str), ">R "); break;
+            case OP_FROM_R: snprintf(instr_str, sizeof(instr_str), "R> "); break;
+            case OP_R_FETCH: snprintf(instr_str, sizeof(instr_str), "R@ "); break;
+            case OP_EQ: snprintf(instr_str, sizeof(instr_str), "= "); break;
+            case OP_LT: snprintf(instr_str, sizeof(instr_str), "< "); break;
+            case OP_GT: snprintf(instr_str, sizeof(instr_str), "> "); break;
+            case OP_AND: snprintf(instr_str, sizeof(instr_str), "AND "); break;
+            case OP_OR: snprintf(instr_str, sizeof(instr_str), "OR "); break;
+            case OP_NOT: snprintf(instr_str, sizeof(instr_str), "NOT "); break;
+            case OP_XOR: snprintf(instr_str, sizeof(instr_str), "XOR "); break;
+            case OP_BIT_AND: snprintf(instr_str, sizeof(instr_str), "& "); break;
+            case OP_BIT_OR: snprintf(instr_str, sizeof(instr_str), "| "); break;
+            case OP_BIT_XOR: snprintf(instr_str, sizeof(instr_str), "^ "); break;
+            case OP_BIT_NOT: snprintf(instr_str, sizeof(instr_str), "~ "); break;
+            case OP_LSHIFT: snprintf(instr_str, sizeof(instr_str), "<< "); break;
+            case OP_RSHIFT: snprintf(instr_str, sizeof(instr_str), ">> "); break;
+            case OP_CR: snprintf(instr_str, sizeof(instr_str), "CR "); break;
+            case OP_EMIT: snprintf(instr_str, sizeof(instr_str), "EMIT "); break;
+            case OP_DOT: snprintf(instr_str, sizeof(instr_str), ". "); break;
+            case OP_DOT_S: snprintf(instr_str, sizeof(instr_str), ".S "); break;
+            case OP_FETCH: snprintf(instr_str, sizeof(instr_str), "@ "); break;
+            case OP_STORE: snprintf(instr_str, sizeof(instr_str), "! "); break;
+            case OP_PLUSSTORE: snprintf(instr_str, sizeof(instr_str), "+! "); break;
+            case OP_I: snprintf(instr_str, sizeof(instr_str), "I "); break;
+            case OP_J: snprintf(instr_str, sizeof(instr_str), "J "); break;
+            case OP_DO:
+                snprintf(instr_str, sizeof(instr_str), "DO ");
+                branch_targets[branch_depth++] = instr.operand;
+                break;
+            case OP_LOOP:
+                snprintf(instr_str, sizeof(instr_str), "LOOP ");
+                if (branch_depth > 0) branch_depth--;
+                break;
+            case OP_PLUS_LOOP:
+                snprintf(instr_str, sizeof(instr_str), "+LOOP ");
+                if (branch_depth > 0) branch_depth--;
+                break;
+            case OP_UNLOOP: snprintf(instr_str, sizeof(instr_str), "UNLOOP "); break;
+            case OP_BRANCH:
+                snprintf(instr_str, sizeof(instr_str), "BRANCH(%ld) ", instr.operand);
+                branch_targets[branch_depth++] = instr.operand;
+                break;
+            case OP_BRANCH_FALSE:
+                snprintf(instr_str, sizeof(instr_str), "IF ");
+                branch_targets[branch_depth++] = instr.operand;
+                break;
+            case OP_CASE:
+                snprintf(instr_str, sizeof(instr_str), "CASE ");
+                branch_targets[branch_depth++] = i; // Marquer le début du CASE
+                break;
+            case OP_OF:
+                snprintf(instr_str, sizeof(instr_str), "OF ");
+                branch_targets[branch_depth++] = instr.operand;
+                break;
+            case OP_ENDOF:
+                if (branch_depth > 0 && i + 1 == branch_targets[branch_depth - 1]) {
+                    snprintf(instr_str, sizeof(instr_str), "ENDOF ");
+                    branch_depth--;
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "ENDOF(%ld) ", instr.operand);
+                }
+                break;
+            case OP_ENDCASE:
+                if (branch_depth > 0 && branch_targets[branch_depth - 1] <= i) {
+                    snprintf(instr_str, sizeof(instr_str), "ENDCASE ");
+                    branch_depth--;
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "ENDCASE ");
+                }
+                break;
             case OP_END:
                 if (branch_depth > 0 && i + 1 == branch_targets[branch_depth - 1]) {
                     snprintf(instr_str, sizeof(instr_str), "THEN ");
@@ -493,17 +575,128 @@ void print_word_definition_irc(int index, Stack *stack) {
                     has_semicolon = 1;
                 }
                 break;
-            // Ajoute les autres cas si nécessaire
+            case OP_DOT_QUOTE:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), ".\" %s \" ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), ".\"(invalid) ");
+                }
+                break;
+            case OP_LITSTRING:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), "\"%s\" ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "(LITSTRING %ld) ", instr.operand);
+                }
+                break;
+            case OP_VARIABLE:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), "VARIABLE %s ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "VARIABLE(invalid) ");
+                }
+                break;
+            case OP_STRING:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), "STRING %s ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "STRING(invalid) ");
+                }
+                break;
+            case OP_QUOTE:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), "\" %s \" ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "\"(invalid) ");
+                }
+                break;
+            case OP_PRINT: snprintf(instr_str, sizeof(instr_str), "PRINT "); break;
+            case OP_NUM_TO_BIN: snprintf(instr_str, sizeof(instr_str), "NUM-TO-BIN "); break;
+            case OP_PRIME_TEST: snprintf(instr_str, sizeof(instr_str), "PRIME? "); break;
+            case OP_BEGIN:
+                snprintf(instr_str, sizeof(instr_str), "BEGIN ");
+                branch_targets[branch_depth++] = i;
+                break;
+            case OP_WHILE:
+                snprintf(instr_str, sizeof(instr_str), "WHILE ");
+                branch_targets[branch_depth++] = instr.operand;
+                break;
+            case OP_REPEAT:
+                snprintf(instr_str, sizeof(instr_str), "REPEAT ");
+                if (branch_depth > 0) branch_depth--;
+                break;
+            case OP_UNTIL:
+                snprintf(instr_str, sizeof(instr_str), "UNTIL ");
+                if (branch_depth > 0) branch_depth--;
+                break;
+            case OP_AGAIN:
+                snprintf(instr_str, sizeof(instr_str), "AGAIN ");
+                if (branch_depth > 0) branch_depth--;
+                break;
+            case OP_EXIT: snprintf(instr_str, sizeof(instr_str), "EXIT "); break;
+            case OP_WORDS: snprintf(instr_str, sizeof(instr_str), "WORDS "); break;
+            case OP_FORGET:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), "FORGET %s ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "FORGET(invalid) ");
+                }
+                break;
+            case OP_LOAD:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), "LOAD %s ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "LOAD(invalid) ");
+                }
+                break;
+            case OP_ALLOT: snprintf(instr_str, sizeof(instr_str), "ALLOT "); break;
+            case OP_CREATE:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), "CREATE %s ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "CREATE(invalid) ");
+                }
+                break;
+            case OP_RECURSE: snprintf(instr_str, sizeof(instr_str), "RECURSE "); break;
+            case OP_IRC_SEND:
+                if (instr.operand < word->string_count && word->strings[instr.operand]) {
+                    snprintf(instr_str, sizeof(instr_str), "IRC-SEND %s ", word->strings[instr.operand]);
+                } else {
+                    snprintf(instr_str, sizeof(instr_str), "IRC-SEND(invalid) ");
+                }
+                break;
+            case OP_SQRT: snprintf(instr_str, sizeof(instr_str), "SQRT "); break;
+            case OP_PICK: snprintf(instr_str, sizeof(instr_str), "PICK "); break;
+            case OP_ROLL: snprintf(instr_str, sizeof(instr_str), "ROLL "); break;
+            case OP_DEPTH: snprintf(instr_str, sizeof(instr_str), "DEPTH "); break;
+            case OP_TOP: snprintf(instr_str, sizeof(instr_str), "TOP "); break;
+            case OP_NIP: snprintf(instr_str, sizeof(instr_str), "NIP "); break;
+            case OP_CLEAR_STACK: snprintf(instr_str, sizeof(instr_str), "CLEAR-STACK "); break;
+            case OP_CLOCK: snprintf(instr_str, sizeof(instr_str), "CLOCK "); break;
+            case OP_SEE:
+                snprintf(instr_str, sizeof(instr_str), "SEE ");
+                break;
+            case OP_2DROP: snprintf(instr_str, sizeof(instr_str), "2DROP "); break;
             default:
-                snprintf(instr_str, sizeof(instr_str), "(OP_%d) ", instr.opcode);
+                snprintf(instr_str, sizeof(instr_str), "(OP_%d %ld) ", instr.opcode, instr.operand);
                 break;
         }
-        strncat(def_msg, instr_str, sizeof(def_msg) - strlen(def_msg) - 1);
+
+        // Vérifier si la chaîne dépasse la taille du buffer
+        if (strlen(def_msg) + strlen(instr_str) >= sizeof(def_msg) - 1) {
+            send_to_channel(def_msg); // Envoyer ce qu’on a déjà
+            snprintf(def_msg, sizeof(def_msg), "%s ", instr_str); // Réinitialiser avec le nouvel élément
+        } else {
+            strncat(def_msg, instr_str, sizeof(def_msg) - strlen(def_msg) - 1);
+        }
     }
 
+    // Ajouter un point-virgule si nécessaire
     if (!has_semicolon) {
         strncat(def_msg, ";", sizeof(def_msg) - strlen(def_msg) - 1);
     }
+
+    // Envoyer la définition complète
     send_to_channel(def_msg);
 }
 void initDictionary(Env *env) {
@@ -1814,6 +2007,8 @@ if (strcmp(token, ";") == 0) {
 
     // Mode compilation : construire le mot
     if (env->compiling) {
+    // Gestion de CASE
+ 
         // Instructions Forth de base
         if (strcmp(token, "DUP") == 0) instr.opcode = OP_DUP;
         else if (strcmp(token, "DROP") == 0) instr.opcode = OP_DROP;
@@ -2033,6 +2228,91 @@ if (strcmp(token, ";") == 0) {
             env->currentWord.code[env->currentWord.code_length++] = instr;
             return;
         }
+        else if (strcmp(token, "CASE") == 0) {
+            // char debug_msg[512];
+            // snprintf(debug_msg, sizeof(debug_msg), "CASE: control_stack_top=%d", env->control_stack_top);
+            // send_to_channel(debug_msg);
+            if (env->control_stack_top >= CONTROL_STACK_SIZE) {
+                set_error("Control stack overflow");
+                env->compile_error = 1;
+                return;
+            }
+            instr.opcode = OP_CASE;
+            env->control_stack[env->control_stack_top++] = (ControlEntry){CT_CASE, env->currentWord.code_length};
+            env->currentWord.code[env->currentWord.code_length++] = instr;
+            // snprintf(debug_msg, sizeof(debug_msg), "After CASE: control_stack_top=%d, type=%d", env->control_stack_top, env->control_stack[env->control_stack_top - 1].type);
+            // send_to_channel(debug_msg);
+            return;
+        }
+        // Gestion de OF
+else if (strcmp(token, "OF") == 0) {
+    // char debug_msg[512];
+    // snprintf(debug_msg, sizeof(debug_msg), "OF: control_stack_top=%d, top_type=%d", env->control_stack_top, env->control_stack_top > 0 ? env->control_stack[env->control_stack_top - 1].type : -1);
+    // send_to_channel(debug_msg);
+    // Vérifier qu’un CT_CASE existe dans la pile
+    int case_found = 0;
+    for (int i = 0; i < env->control_stack_top; i++) {
+        if (env->control_stack[i].type == CT_CASE) {
+            case_found = 1;
+            break;
+        }
+    }
+    if (!case_found) {
+        set_error("OF without CASE");
+        env->compile_error = 1;
+        return;
+    }
+    instr.opcode = OP_OF;
+    instr.operand = 0; // À remplir avec ENDOF
+    env->control_stack[env->control_stack_top++] = (ControlEntry){CT_OF, env->currentWord.code_length};
+    env->currentWord.code[env->currentWord.code_length++] = instr;
+    return;
+}
+        // Gestion de ENDOF
+        else if (strcmp(token, "ENDOF") == 0) {
+            //char debug_msg[512];
+            //snprintf(debug_msg, sizeof(debug_msg), "ENDOF: control_stack_top=%d", env->control_stack_top);
+            //send_to_channel(debug_msg);
+            if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_OF) {
+                set_error("ENDOF without OF");
+                env->compile_error = 1;
+                return;
+            }
+            ControlEntry of_entry = env->control_stack[--env->control_stack_top];
+            env->currentWord.code[of_entry.addr].operand = env->currentWord.code_length + 1;
+            instr.opcode = OP_ENDOF;
+            instr.operand = 0; // À remplir avec ENDCASE
+            env->control_stack[env->control_stack_top++] = (ControlEntry){CT_ENDOF, env->currentWord.code_length};
+            env->currentWord.code[env->currentWord.code_length++] = instr;
+            return;
+        }
+        // Gestion de ENDCASE
+else if (strcmp(token, "ENDCASE") == 0) {
+    //char debug_msg[512];
+    //snprintf(debug_msg, sizeof(debug_msg), "ENDCASE: control_stack_top=%d", env->control_stack_top);
+    //send_to_channel(debug_msg);
+    if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_ENDOF) {
+        set_error("ENDCASE without ENDOF or CASE");
+        env->compile_error = 1;
+        return;
+    }
+    while (env->control_stack_top > 0 && env->control_stack[env->control_stack_top - 1].type == CT_ENDOF) {
+        ControlEntry endof_entry = env->control_stack[--env->control_stack_top];
+        env->currentWord.code[endof_entry.addr].operand = env->currentWord.code_length;
+    }
+    if (env->control_stack_top > 0 && env->control_stack[env->control_stack_top - 1].type == CT_CASE) {
+        env->control_stack_top--; // Dépiler CASE
+    } else {
+        set_error("ENDCASE without matching CASE");
+        env->compile_error = 1;
+        return;
+    }
+    instr.opcode = OP_ENDCASE;
+    env->currentWord.code[env->currentWord.code_length++] = instr;
+    // snprintf(debug_msg, sizeof(debug_msg), "After ENDCASE: control_stack_top=%d", env->control_stack_top);
+    // send_to_channel(debug_msg);
+    return;
+}
         // Cas général : mot existant ou nombre
         else {
             int index = findCompiledWordIndex(token);
