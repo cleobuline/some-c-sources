@@ -18,7 +18,7 @@
 #define MAX_STRING_SIZE 256
 #define MPZ_POOL_SIZE 3
 #define BUFFER_SIZE 512
-
+ 
 #define SERVER "213.165.83.201"
 #define PORT 6667
 #define BOT_NAME "multi"
@@ -128,6 +128,7 @@ void executeCompiledWord(CompiledWord *word, Stack *stack, int word_index);
 void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledWord *word, int word_index);
 void interpret(char *input, Stack *stack);
 void compileToken(char *token, char **input_rest, Env *env);
+void send_to_channel(const char *msg) ;
 
 // Variables globales
 Env *head = NULL;
