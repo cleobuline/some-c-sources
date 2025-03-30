@@ -1,3 +1,4 @@
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -11,19 +12,17 @@
  
 
 #define STACK_SIZE 1000
-#define DICT_SIZE 200
 #define WORD_CODE_SIZE 512
 #define CONTROL_STACK_SIZE 100
-#define VAR_SIZE 100
 #define MAX_STRING_SIZE 256
 #define MPZ_POOL_SIZE 3
-#define BUFFER_SIZE 512
+#define BUFFER_SIZE 2048
  
-#define SERVER "213.165.83.201" // labynet.fr
+#define SERVER "46.16.175.175" // default 
 #define PORT 6667
-#define BOT_NAME "forth"
-#define USER "forth"
-#define CHANNEL "#labynet"
+#define BOT_NAME "mforth"
+#define USER "mforth"
+#define CHANNEL "##forth"
 
 // Après les #define et les includes
 typedef enum {
@@ -135,6 +134,7 @@ Env *head = NULL;
 Env *currentenv = NULL;
 static int irc_socket = -1;
 mpz_t mpz_pool[MPZ_POOL_SIZE];
+char * channel ; 
 
 // Fonctions utilitaires
 void init_mpz_pool() {
@@ -219,7 +219,7 @@ void send_to_channel(const char *msg) {
             char chunk[401];
             strncpy(chunk, msg + offset, current_chunk_size);
             chunk[current_chunk_size] = '\0';
-            snprintf(response, sizeof(response), "PRIVMSG %s :%s\r\n", CHANNEL, chunk);
+            snprintf(response, sizeof(response), "PRIVMSG %s :%s\r\n", channel, chunk);
             if (send(irc_socket, response, strlen(response), 0) < 0) {
                 printf("Failed to send to channel: %s\n", chunk);
                 break;
@@ -2490,43 +2490,8 @@ else if (strcmp(token, "ENDCASE") == 0) {
 }
 
 // Connexion IRC
-/*
-void irc_connect(void) {
-    if (irc_socket != -1) {
-        close(irc_socket);
-        irc_socket = -1;
-    }
-
-    irc_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (irc_socket == -1) {
-        perror("socket");
-        return;
-    }
-
-    struct sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-    server_addr.sin_addr.s_addr = inet_addr(SERVER);
-
-    if (connect(irc_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("connect");
-        close(irc_socket);
-        irc_socket = -1;
-        return;
-    }
-
-    char buffer[512];
-    snprintf(buffer, sizeof(buffer), "NICK %s\r\n", BOT_NAME);
-    send(irc_socket, buffer, strlen(buffer), 0);
-
-    snprintf(buffer, sizeof(buffer), "USER %s 0 * :%s\r\n", USER, USER);
-    send(irc_socket, buffer, strlen(buffer), 0);
-
-    snprintf(buffer, sizeof(buffer), "JOIN %s\r\n", CHANNEL);
-    send(irc_socket, buffer, strlen(buffer), 0);
-}
-
- */ 
+ 
+ 
  void irc_connect(const char *server_ip, const char *bot_nick, const char *channel) {
     if (irc_socket != -1) {
         close(irc_socket);
@@ -2561,11 +2526,11 @@ void irc_connect(void) {
     snprintf(buffer, sizeof(buffer), "JOIN %s\r\n", channel);
     send(irc_socket, buffer, strlen(buffer), 0);
 }
- 
+
 int main(int argc, char *argv[]) {
     char *server_ip = "213.165.83.201";  // Valeur par défaut
     char *bot_nick = "forth";            // Valeur par défaut
-    char *channel = "#labynet";          // Valeur par défaut
+    channel = "#labynet";          // Valeur par défaut
 
     // Vérifier et assigner les arguments
     if (argc != 4) {
@@ -2599,7 +2564,7 @@ int main(int argc, char *argv[]) {
                 break;
             }
             buffer[bytes] = '\0';
-
+			// printf("Raw buffer: %s\n", buffer); // Log brut
             // Gestion des PING/PONG
             if (strstr(buffer, "PING ") == buffer) {
                 char pong[512];
@@ -2621,12 +2586,14 @@ int main(int argc, char *argv[]) {
             // Vérification du préfixe de commande
             char prefix[512];
             snprintf(prefix, sizeof(prefix), "PRIVMSG %s :%s:", channel, bot_nick);
+            // printf("Prefix: '%s'\n", prefix); // Log du préfixe
             char *msg = strstr(buffer, prefix);
             if (msg) {
+            // printf("Matched prefix at: %s\n", msg); // Log si match
                 char forth_cmd[512];
                 snprintf(forth_cmd, sizeof(forth_cmd), "%s", msg + strlen(prefix));
                 forth_cmd[strcspn(forth_cmd, "\r\n")] = '\0';
-
+			 // printf("Forth command: '%s'\n", forth_cmd); // Log de la commande
                 // Recherche ou création de l’environnement pour cet utilisateur
                 Env *env = findEnv(nick);
                 if (!env) {
@@ -2648,6 +2615,7 @@ int main(int argc, char *argv[]) {
                     send_to_channel("Error: Environment not initialized");
                 } else {
                     interpret(forth_cmd, &env->main_stack);
+	
                 }
             }
         }
@@ -2658,5 +2626,4 @@ int main(int argc, char *argv[]) {
     clear_mpz_pool();
     if (irc_socket != -1) close(irc_socket);
     return 0;
-}
- 
+} 
