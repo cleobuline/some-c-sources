@@ -19,10 +19,10 @@
 #define MPZ_POOL_SIZE 3
 #define BUFFER_SIZE 512
  
-#define SERVER "213.165.83.201"
+#define SERVER "213.165.83.201" // labynet.fr
 #define PORT 6667
-#define BOT_NAME "multi"
-#define USER "multi"
+#define BOT_NAME "forth"
+#define USER "forth"
 #define CHANNEL "#labynet"
 
 // Après les #define et les includes
@@ -231,7 +231,61 @@ void send_to_channel(const char *msg) {
         printf("IRC socket not initialized\n");
     }
 }
- 
+void initEnv(Env *env, const char *nick) {
+    strncpy(env->nick, nick, MAX_STRING_SIZE - 1);
+    env->nick[MAX_STRING_SIZE - 1] = '\0';
+
+    env->main_stack.top = -1;
+    env->return_stack.top = -1;
+    for (int i = 0; i < STACK_SIZE; i++) {
+        mpz_init(env->main_stack.data[i]);
+        mpz_init(env->return_stack.data[i]);
+    }
+
+    initDynamicDictionary(&env->dictionary);
+
+    memory_init(&env->memory_list);
+
+    // Ajout de la variable USERNAME
+    unsigned long username_idx = memory_create(&env->memory_list, "USERNAME", TYPE_STRING);
+    if (username_idx != 0) {
+        MemoryNode *username_node = memory_get(&env->memory_list, username_idx);
+        if (username_node) {
+            memory_store(&env->memory_list, username_idx, nick); // Stocker le nick dans USERNAME
+            // Ajouter USERNAME au dictionnaire
+            if (env->dictionary.count >= env->dictionary.capacity) {
+                resizeDynamicDictionary(&env->dictionary);
+            }
+            int dict_idx = env->dictionary.count++;
+            env->dictionary.words[dict_idx].name = strdup("USERNAME");
+            env->dictionary.words[dict_idx].code[0].opcode = OP_PUSH;
+            env->dictionary.words[dict_idx].code[0].operand = username_idx;
+            env->dictionary.words[dict_idx].code_length = 1;
+            env->dictionary.words[dict_idx].string_count = 0;
+            env->dictionary.words[dict_idx].immediate = 0;
+        }
+    }
+
+    env->buffer_pos = 0;
+    memset(env->output_buffer, 0, BUFFER_SIZE);
+    env->currentWord.name = NULL;
+    env->currentWord.code_length = 0;
+    env->currentWord.string_count = 0;
+    env->compiling = 0;
+    env->current_word_index = -1;
+
+    env->control_stack_top = 0;
+
+    env->string_stack_top = -1;
+    for (int i = 0; i < STACK_SIZE; i++) env->string_stack[i] = NULL;
+
+    env->error_flag = 0;
+    env->emit_buffer[0] = '\0';
+    env->emit_buffer_pos = 0;
+
+    env->next = NULL;
+}
+ /*
 // Gestion des environnements
 void initEnv(Env *env, const char *nick) {
     strncpy(env->nick, nick, MAX_STRING_SIZE - 1);
@@ -267,6 +321,7 @@ void initEnv(Env *env, const char *nick) {
 
     env->next = NULL;
 }
+*/
 Env *createEnv(const char *nick) {
     Env *new_env = (Env *)malloc(sizeof(Env));
     if (!new_env) {
@@ -1108,11 +1163,27 @@ case OP_J:
                 push(stack, *result);
             }
         break ; 
+        /* 
 case OP_DOT_QUOTE:
     if (instr.operand >= 0 && instr.operand < word->string_count && word->strings[instr.operand]) {
         send_to_channel(word->strings[instr.operand]);
     } else {
         set_error("Invalid string index for .\"");
+    }
+    break;
+    */ 
+    case OP_DOT_QUOTE:
+    if (instr.operand < word->string_count && word->strings[instr.operand]) {
+        size_t len = strlen(word->strings[instr.operand]);
+        if (currentenv->buffer_pos + len < BUFFER_SIZE - 1) {
+            strncpy(currentenv->output_buffer + currentenv->buffer_pos, word->strings[instr.operand], len);
+            currentenv->buffer_pos += len;
+            currentenv->output_buffer[currentenv->buffer_pos] = '\0';
+        } else {
+            set_error("DOT_QUOTE: Output buffer overflow");
+        }
+    } else {
+        set_error("DOT_QUOTE: Invalid string index");
     }
     break;
 case OP_LITSTRING:
@@ -1507,12 +1578,34 @@ case OP_QUOTE:
         set_error("QUOTE: Invalid string index");
     }
     break;
+    /* Ancienne version 
 case OP_PRINT:
     pop(stack, *a);
     if (mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) <= currentenv->string_stack_top) {
         char *str = currentenv->string_stack[mpz_get_si(*a)];
         if (str) {
             send_to_channel(str);
+        } else {
+            set_error("PRINT: No string at index");
+        }
+    } else {
+        set_error("PRINT: Invalid string stack index");
+    }
+    break;
+    */ 
+    case OP_PRINT:
+    pop(stack, *a);
+    if (mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) <= currentenv->string_stack_top) {
+        char *str = currentenv->string_stack[mpz_get_si(*a)];
+        if (str) {
+            size_t len = strlen(str);
+            if (currentenv->buffer_pos + len < BUFFER_SIZE - 1) {
+                strncpy(currentenv->output_buffer + currentenv->buffer_pos, str, len);
+                currentenv->buffer_pos += len;
+                currentenv->output_buffer[currentenv->buffer_pos] = '\0';
+            } else {
+                set_error("PRINT: Output buffer overflow");
+            }
         } else {
             set_error("PRINT: No string at index");
         }
@@ -2117,6 +2210,7 @@ if (strcmp(token, ";") == 0) {
 }
 
 // Connexion IRC
+/*
 void irc_connect(void) {
     if (irc_socket != -1) {
         close(irc_socket);
@@ -2152,25 +2246,73 @@ void irc_connect(void) {
     send(irc_socket, buffer, strlen(buffer), 0);
 }
 
- 
+ */ 
+ void irc_connect(const char *server_ip, const char *bot_nick, const char *channel) {
+    if (irc_socket != -1) {
+        close(irc_socket);
+        irc_socket = -1;
+    }
 
-int main() {
+    irc_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (irc_socket == -1) {
+        perror("socket");
+        return;
+    }
+
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(6667);  // Port fixe pour l’instant
+    server_addr.sin_addr.s_addr = inet_addr(server_ip);
+
+    if (connect(irc_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("connect");
+        close(irc_socket);
+        irc_socket = -1;
+        return;
+    }
+
+    char buffer[512];
+    snprintf(buffer, sizeof(buffer), "NICK %s\r\n", bot_nick);
+    send(irc_socket, buffer, strlen(buffer), 0);
+
+    snprintf(buffer, sizeof(buffer), "USER %s 0 * :%s\r\n", bot_nick, bot_nick);
+    send(irc_socket, buffer, strlen(buffer), 0);
+
+    snprintf(buffer, sizeof(buffer), "JOIN %s\r\n", channel);
+    send(irc_socket, buffer, strlen(buffer), 0);
+}
+ 
+int main(int argc, char *argv[]) {
+    char *server_ip = "213.165.83.201";  // Valeur par défaut
+    char *bot_nick = "forth";            // Valeur par défaut
+    char *channel = "#labynet";          // Valeur par défaut
+
+    // Vérifier et assigner les arguments
+    if (argc != 4) {
+        printf("Usage: %s <IP> <NICK> <CHANNEL>\n", argv[0]);
+        printf("Using defaults: IP=%s, NICK=%s, CHANNEL=%s\n", server_ip, bot_nick, channel);
+    } else {
+        server_ip = argv[1];
+        bot_nick = argv[2];
+        channel = argv[3];
+    }
+
     init_mpz_pool();
 
     while (1) {
-        irc_connect();  // Utilise irc_socket global défini dans forth_bot_multi_linked.c
+        irc_connect(server_ip, bot_nick, channel);  // Passer les paramètres à irc_connect
         if (irc_socket == -1) {
-            printf("Failed to connect, retrying in 5 seconds...\n");
+            printf("Failed to connect to %s, retrying in 5 seconds...\n", server_ip);
             sleep(5);
             continue;
         }
 
-        printf("Connected to labynet.fr\n");
+        printf("Connected to %s on channel %s as %s\n", server_ip, channel, bot_nick);
         char buffer[512];
         while (1) {
             int bytes = recv(irc_socket, buffer, sizeof(buffer) - 1, 0);
             if (bytes <= 0) {
-                printf("Disconnected, reconnecting in 5 seconds...\n");
+                printf("Disconnected from %s, reconnecting in 5 seconds...\n", server_ip);
                 close(irc_socket);
                 irc_socket = -1;
                 sleep(5);
@@ -2198,7 +2340,7 @@ int main() {
 
             // Vérification du préfixe de commande
             char prefix[512];
-            snprintf(prefix, sizeof(prefix), "PRIVMSG %s :%s:", CHANNEL, BOT_NAME);
+            snprintf(prefix, sizeof(prefix), "PRIVMSG %s :%s:", channel, bot_nick);
             char *msg = strstr(buffer, prefix);
             if (msg) {
                 char forth_cmd[512];
@@ -2216,16 +2358,6 @@ int main() {
                     currentenv = env;
                     printf("Created env for %s\n", nick);
                     initDictionary(env);
-
-                    // Initialisation de DP pour cet utilisateur
-                    //char dp_cmd[] = "VARIABLE DP";
-                    //interpret(dp_cmd, &env->main_stack);
-                    //MemoryNode *dp_node = memory_get(&env->memory_list, memory_create(&env->memory_list, "DP", TYPE_VAR));
-                    //if (dp_node) {
-                    //    mpz_set_si(dp_node->value.number, 0);
-                    //} else {
-                    //   printf("Failed to initialize DP for %s\n", nick);
-                    //}
                 } else {
                     currentenv = env;
                 }
@@ -2241,9 +2373,10 @@ int main() {
         }
     }
 
-    // Nettoyage final (si on sort de la boucle infinie)
+    // Nettoyage final
     while (head) freeEnv(head->nick);
     clear_mpz_pool();
     if (irc_socket != -1) close(irc_socket);
     return 0;
 }
+ 
