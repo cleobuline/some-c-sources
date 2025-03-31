@@ -2146,7 +2146,7 @@ if (strcmp(token, ";") == 0) {
             env->control_stack[env->control_stack_top++] = (ControlEntry){CT_IF, env->currentWord.code_length};
             env->currentWord.code[env->currentWord.code_length++] = instr;
             return;
-        }
+        } 
         else if (strcmp(token, "ELSE") == 0) {
             if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_IF) {
                 set_error("ELSE without IF");
