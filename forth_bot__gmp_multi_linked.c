@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <gmp.h>
 #include <time.h>
+#include <ctype.h>
 #include "memory_forth.h"
  
 
@@ -285,43 +286,7 @@ void initEnv(Env *env, const char *nick) {
 
     env->next = NULL;
 }
- /*
-// Gestion des environnements
-void initEnv(Env *env, const char *nick) {
-    strncpy(env->nick, nick, MAX_STRING_SIZE - 1);
-    env->nick[MAX_STRING_SIZE - 1] = '\0';
-
-    env->main_stack.top = -1;
-    env->return_stack.top = -1;
-    for (int i = 0; i < STACK_SIZE; i++) {
-        mpz_init(env->main_stack.data[i]);
-        mpz_init(env->return_stack.data[i]);
-    }
-
-    initDynamicDictionary(&env->dictionary); // Remplace l’ancienne initialisation
-
-    memory_init(&env->memory_list);
-
-    env->buffer_pos = 0;
-    memset(env->output_buffer, 0, BUFFER_SIZE);
-    env->currentWord.name = NULL;
-    env->currentWord.code_length = 0;
-    env->currentWord.string_count = 0;
-    env->compiling = 0;
-    env->current_word_index = -1;
-
-    env->control_stack_top = 0;
-
-    env->string_stack_top = -1;
-    for (int i = 0; i < STACK_SIZE; i++) env->string_stack[i] = NULL;
-
-    env->error_flag = 0;
-    env->emit_buffer[0] = '\0';
-    env->emit_buffer_pos = 0;
-
-    env->next = NULL;
-}
-*/
+ 
 Env *createEnv(const char *nick) {
     Env *new_env = (Env *)malloc(sizeof(Env));
     if (!new_env) {
@@ -769,13 +734,7 @@ unsigned long encoded_idx;
     unsigned long type;
     MemoryNode *node;
     switch (instr.opcode) {
-// case OP_PUSH:
-   // mpz_set_ui(*result, instr.operand);
-    // char debug_msg[512];
-    // snprintf(debug_msg, sizeof(debug_msg), "OP_PUSH: operand=%lu", instr.operand);
-    // send_to_channel(debug_msg);
-    // push(stack, *result);
-    break;
+ 
 case OP_PUSH:
     if (instr.operand < word->string_count && word->strings[instr.operand]) {
         if (mpz_set_str(*result, word->strings[instr.operand], 10) == 0) {
@@ -2146,7 +2105,7 @@ if (strcmp(token, ";") == 0) {
             env->control_stack[env->control_stack_top++] = (ControlEntry){CT_IF, env->currentWord.code_length};
             env->currentWord.code[env->currentWord.code_length++] = instr;
             return;
-        } 
+        }
         else if (strcmp(token, "ELSE") == 0) {
             if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_IF) {
                 set_error("ELSE without IF");
@@ -2527,17 +2486,19 @@ else if (strcmp(token, "ENDCASE") == 0) {
     send(irc_socket, buffer, strlen(buffer), 0);
 }
 
-int main(int argc, char *argv[]) {
-    char *server_ip = "213.165.83.201";  // Valeur par défaut
-    char *bot_nick = "forth";            // Valeur par défaut
-    channel = "#labynet";          // Valeur par défaut
+#include <netdb.h> // Ajouter cet include pour gethostbyname
 
-    // Vérifier et assigner les arguments
+int main(int argc, char *argv[]) {
+    char *server_name = "irc.example.com"; // Nom du serveur par défaut
+    char *bot_nick = "forth";
+    channel = "#labynet";
+    struct hostent *server;
+
     if (argc != 4) {
-        printf("Usage: %s <IP> <NICK> <CHANNEL>\n", argv[0]);
-        printf("Using defaults: IP=%s, NICK=%s, CHANNEL=%s\n", server_ip, bot_nick, channel);
+        printf("Usage: %s <SERVER_NAME> <NICK> <CHANNEL>\n", argv[0]);
+        printf("Using defaults: SERVER=%s, NICK=%s, CHANNEL=%s\n", server_name, bot_nick, channel);
     } else {
-        server_ip = argv[1];
+        server_name = argv[1];
         bot_nick = argv[2];
         channel = argv[3];
     }
@@ -2545,27 +2506,36 @@ int main(int argc, char *argv[]) {
     init_mpz_pool();
 
     while (1) {
-        irc_connect(server_ip, bot_nick, channel);  // Passer les paramètres à irc_connect
-        if (irc_socket == -1) {
-            printf("Failed to connect to %s, retrying in 5 seconds...\n", server_ip);
+        // Résolution DNS du nom du serveur
+        server = gethostbyname(server_name);
+        if (server == NULL) {
+            printf("Failed to resolve hostname %s, retrying in 5 seconds...\n", server_name);
             sleep(5);
             continue;
         }
 
-        printf("Connected to %s on channel %s as %s\n", server_ip, channel, bot_nick);
+        // Utiliser la première adresse IP résolue (assumée IPv4)
+        char *server_ip = inet_ntoa(*(struct in_addr *)server->h_addr_list[0]);
+        irc_connect(server_ip, bot_nick, channel);
+        if (irc_socket == -1) {
+            printf("Failed to connect to %s (%s), retrying in 5 seconds...\n", server_name, server_ip);
+            sleep(5);
+            continue;
+        }
+
+        printf("Connected to %s (%s) on channel %s as %s\n", server_name, server_ip, channel, bot_nick);
         char buffer[512];
         while (1) {
             int bytes = recv(irc_socket, buffer, sizeof(buffer) - 1, 0);
             if (bytes <= 0) {
-                printf("Disconnected from %s, reconnecting in 5 seconds...\n", server_ip);
+                printf("Disconnected from %s, reconnecting in 5 seconds...\n", server_name);
                 close(irc_socket);
                 irc_socket = -1;
                 sleep(5);
                 break;
             }
             buffer[bytes] = '\0';
-			// printf("Raw buffer: %s\n", buffer); // Log brut
-            // Gestion des PING/PONG
+
             if (strstr(buffer, "PING ") == buffer) {
                 char pong[512];
                 snprintf(pong, sizeof(pong), "PONG %s\r\n", buffer + 5);
@@ -2573,7 +2543,6 @@ int main(int argc, char *argv[]) {
                 continue;
             }
 
-            // Extraction du nick de l’expéditeur
             char *nick_start = strchr(buffer, ':');
             if (!nick_start) continue;
             nick_start++;
@@ -2583,18 +2552,38 @@ int main(int argc, char *argv[]) {
             strncpy(nick, nick_start, nick_end - nick_start);
             nick[nick_end - nick_start] = '\0';
 
-            // Vérification du préfixe de commande
             char prefix[512];
             snprintf(prefix, sizeof(prefix), "PRIVMSG %s :%s:", channel, bot_nick);
-            // printf("Prefix: '%s'\n", prefix); // Log du préfixe
             char *msg = strstr(buffer, prefix);
             if (msg) {
-            // printf("Matched prefix at: %s\n", msg); // Log si match
                 char forth_cmd[512];
                 snprintf(forth_cmd, sizeof(forth_cmd), "%s", msg + strlen(prefix));
                 forth_cmd[strcspn(forth_cmd, "\r\n")] = '\0';
-			 // printf("Forth command: '%s'\n", forth_cmd); // Log de la commande
-                // Recherche ou création de l’environnement pour cet utilisateur
+
+                // Trim des espaces
+                char *trimmed_cmd = forth_cmd;
+                while (isspace((unsigned char)*trimmed_cmd)) trimmed_cmd++;
+                size_t len = strlen(trimmed_cmd);
+                while (len > 0 && isspace((unsigned char)trimmed_cmd[len - 1])) {
+                    trimmed_cmd[--len] = '\0';
+                }
+
+                // Vérification de QUIT
+                if (strcmp(trimmed_cmd, "QUIT") == 0) {
+                    printf("DEBUG: QUIT detected for %s\n", nick);
+                    Env *env = findEnv(nick);
+                    if (env) {
+                        freeEnv(nick);
+                        char quit_msg[512];
+                        snprintf(quit_msg, sizeof(quit_msg), "Environment for %s has been freed.", nick);
+                        send_to_channel(quit_msg);
+                    } else {
+                        send_to_channel("No environment found for you to quit.");
+                    }
+                    continue;
+                }
+
+                // Gestion normale
                 Env *env = findEnv(nick);
                 if (!env) {
                     env = createEnv(nick);
@@ -2609,21 +2598,18 @@ int main(int argc, char *argv[]) {
                     currentenv = env;
                 }
 
-                // Interprétation de la commande Forth
                 if (!currentenv) {
                     printf("currentenv is NULL!\n");
                     send_to_channel("Error: Environment not initialized");
                 } else {
-                    interpret(forth_cmd, &env->main_stack);
-	
+                    interpret(trimmed_cmd, &env->main_stack);
                 }
             }
         }
     }
 
-    // Nettoyage final
     while (head) freeEnv(head->nick);
     clear_mpz_pool();
     if (irc_socket != -1) close(irc_socket);
     return 0;
-} 
+}
