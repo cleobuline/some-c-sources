@@ -414,7 +414,7 @@ char *generate_image(const char *prompt) {
 
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Authorization: Bearer YOUR_API_KEY");
+    headers = curl_slist_append(headers, "Authorization: Bearer sk-YOUR_API_KEY");
 
     curl_easy_setopt(curl, CURLOPT_URL, "https://api.openai.com/v1/images/generations");
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
@@ -528,7 +528,7 @@ char *generate_image(const char *prompt) {
                  CURLFORM_END);
     curl_formadd(&formpost, &lastptr,
                  CURLFORM_COPYNAME, "key",
-                 CURLFORM_COPYCONTENTS, "1d4b24ab1f37339f9be9dc012cc67320", // Remplace par ta clé API ImgBB
+                 CURLFORM_COPYCONTENTS, "YOUR_IMGBB_API_KEY", // Remplace par ta clé API ImgBB
                  CURLFORM_END);
 
     curl_easy_setopt(curl_imgbb, CURLOPT_URL, "https://api.imgbb.com/1/upload");
@@ -624,7 +624,7 @@ char *generate_image_tiny(const char *prompt) {
 
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Authorization: Bearer YOUR_API_KEY");
+    headers = curl_slist_append(headers, "Authorization: Bearer sk-YOUR_API_KEY");
 
     curl_easy_setopt(curl, CURLOPT_URL, "https://api.openai.com/v1/images/generations");
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
@@ -1106,7 +1106,7 @@ void initDictionary(Env *env) {
     addWord(&env->dictionary, "\"", OP_QUOTE, 0);
     addWord(&env->dictionary, "2DROP", OP_2DROP, 0);
     addWord(&env->dictionary, "IMAGE", OP_IMAGE, 0);
-    
+    addWord(&env->dictionary, "TEMP-IMAGE", OP_TEMP_IMAGE, 0);
 }
 void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledWord *word, int word_index) {
     if (!currentenv || currentenv->error_flag) return;
@@ -2177,6 +2177,36 @@ case OP_IMAGE:
         char *description = currentenv->string_stack[mpz_get_si(*a)];
         if (description) {
             char *short_url = generate_image(description);
+            if (short_url) {
+                send_to_channel(short_url);
+                free(short_url);
+                // Nettoyer string_stack
+                free(currentenv->string_stack[mpz_get_si(*a)]);
+                for (int i = mpz_get_si(*a); i < currentenv->string_stack_top; i++) {
+                    currentenv->string_stack[i] = currentenv->string_stack[i + 1];
+                }
+                currentenv->string_stack[currentenv->string_stack_top--] = NULL;
+            } else {
+                set_error("IMAGE: Failed to generate or upload image");
+            }
+        } else {
+            set_error("IMAGE: No description string at index");
+        }
+    } else {
+        set_error("IMAGE: Invalid string stack index");
+        push(stack, *a);
+    }
+    break;
+    case OP_TEMP_IMAGE:
+    if (stack->top < 0) {
+        set_error("IMAGE: Stack underflow");
+        break;
+    }
+    pop(stack, *a); // Index de la description dans string_stack
+    if (mpz_fits_slong_p(*a) && mpz_get_si(*a) >= 0 && mpz_get_si(*a) <= currentenv->string_stack_top) {
+        char *description = currentenv->string_stack[mpz_get_si(*a)];
+        if (description) {
+            char *short_url = generate_image_tiny(description);
             if (short_url) {
                 send_to_channel(short_url);
                 free(short_url);
