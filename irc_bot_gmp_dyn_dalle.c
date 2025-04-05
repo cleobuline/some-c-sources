@@ -39,7 +39,7 @@ typedef enum {
     OP_PICK, OP_ROLL, OP_PLUSSTORE, OP_DEPTH, OP_TOP, OP_NIP, OP_MOD,
     OP_CREATE, OP_ALLOT, OP_RECURSE, OP_IRC_CONNECT, OP_IRC_SEND, OP_EMIT,
     OP_STRING, OP_QUOTE, OP_PRINT, OP_NUM_TO_BIN, OP_PRIME_TEST, OP_AGAIN,
-    OP_TO_R, OP_FROM_R, OP_R_FETCH, OP_UNTIL, OP_CLEAR_STACK, OP_CLOCK, OP_SEE, OP_2DROP,OP_IMAGE,OP_TEMP_IMAGE
+    OP_TO_R, OP_FROM_R, OP_R_FETCH, OP_UNTIL, OP_CLEAR_STACK, OP_CLOCK, OP_SEE, OP_2DROP,OP_IMAGE,OP_TEMP_IMAGE,OP_CLEAR_STRINGS,OP_DELAY
 } OpCode;
 
 typedef struct {
@@ -1107,6 +1107,9 @@ void initDictionary(Env *env) {
     addWord(&env->dictionary, "2DROP", OP_2DROP, 0);
     addWord(&env->dictionary, "IMAGE", OP_IMAGE, 0);
     addWord(&env->dictionary, "TEMP-IMAGE", OP_TEMP_IMAGE, 0);
+        addWord(&env->dictionary, "CLEAR-STRINGS", OP_CLEAR_STRINGS, 0);
+    addWord(&env->dictionary, "DELAY", OP_DELAY, 0);
+         addWord(&env->dictionary, "EXIT", OP_EXIT, 0);
 }
 void executeInstruction(Instruction instr, Stack *stack, long int *ip, CompiledWord *word, int word_index) {
     if (!currentenv || currentenv->error_flag) return;
@@ -1548,59 +1551,50 @@ case OP_FETCH:
     break;
     
  
+ 
  case OP_ALLOT:
-            if (stack->top < 0) {
-                set_error("ALLOT: Stack underflow");
-                break;
-            }
-            pop(stack, *a); // Taille
-            if (stack->top < 0) {
-                set_error("ALLOT: Stack underflow for index");
-                push(stack, *a);
-                break;
-            }
-            pop(stack, *result); // encoded_idx
-            encoded_idx = mpz_get_ui(*result);
-            node = memory_get(&currentenv->memory_list, encoded_idx);
-            if (!node) {
-                set_error("ALLOT: Invalid memory index");
-                push(stack, *result);
-                push(stack, *a);
-                break;
-            }
-            if (node->type != TYPE_VAR) { // Vérifier node->type, pas memory_get_type
-                set_error("ALLOT: Can only allot on a variable");
-                push(stack, *result);
-                push(stack, *a);
-                break;
-            }
-            int size = mpz_get_si(*a);
-            if (size <= 0) {
-                set_error("ALLOT: Size must be positive");
-                push(stack, *result);
-                push(stack, *a);
-                break;
-            }
-            mpz_t *array = (mpz_t *)malloc(size * sizeof(mpz_t));
-            if (!array) {
-                set_error("ALLOT: Memory allocation failed");
-                push(stack, *result);
-                push(stack, *a);
-                break;
-            }
-            for (int i = 0; i < size; i++) {
-                mpz_init_set_ui(array[i], 0);
-            }
-            if (node->type == TYPE_VAR) {
-                mpz_clear(node->value.number);
-            }
-            node->type = TYPE_ARRAY;
-            node->value.array.data = array;
-            node->value.array.size = size;
-            // char debug_msg[512];
-            // snprintf(debug_msg, sizeof(debug_msg), "ALLOT: Created array %s with size %d at encoded_idx=%lu", node->name, size, encoded_idx);
-            // send_to_channel(debug_msg);
-            break;
+    if (stack->top < 1) { // Vérifie 2 éléments
+        set_error("ALLOT: Stack underflow");
+        break;
+    }
+    pop(stack, *a); // Taille
+    pop(stack, *result); // encoded_idx
+    encoded_idx = mpz_get_ui(*result);
+    node = memory_get(&currentenv->memory_list, encoded_idx);
+    if (!node) {
+        set_error("ALLOT: Invalid memory index");
+        push(stack, *result);
+        push(stack, *a);
+        break;
+    }
+    if (node->type != TYPE_ARRAY) {
+        set_error("ALLOT: Must be an array");
+        push(stack, *result);
+        push(stack, *a);
+        break;
+    }
+    int size = mpz_get_si(*a);
+    if (size < 0) { // Accepte 0, mais négatif interdit
+        set_error("ALLOT: Size must be non-negative");
+        push(stack, *result);
+        push(stack, *a);
+        break;
+    }
+    unsigned long new_size = node->value.array.size + size;
+    mpz_t *new_array = realloc(node->value.array.data, new_size * sizeof(mpz_t));
+    if (!new_array) {
+        set_error("ALLOT: Memory allocation failed");
+        push(stack, *result);
+        push(stack, *a);
+        break;
+    }
+    node->value.array.data = new_array;
+    for (unsigned long i = node->value.array.size; i < new_size; i++) {
+        mpz_init_set_ui(node->value.array.data[i], 0);
+    }
+    node->value.array.size = new_size;
+    break;
+ 
            case OP_IRC_SEND:
             pop(stack, *a);
             if (instr.operand >= 0 && instr.operand < word->string_count && word->strings[instr.operand]) {
@@ -1612,46 +1606,43 @@ case OP_DO:
         set_error("DO: Stack underflow");
         break;
     }
-    pop(stack, *b);  // Start (index initial)
-    pop(stack, *a);  // Limit
-    if (!currentenv->error_flag && currentenv->return_stack.top < STACK_SIZE - 3) {
-        currentenv->return_stack.top += 3;
-        mpz_set(currentenv->return_stack.data[currentenv->return_stack.top - 2], *a);  // limit
-        mpz_set(currentenv->return_stack.data[currentenv->return_stack.top - 1], *b);  // index
-        mpz_set_si(currentenv->return_stack.data[currentenv->return_stack.top], *ip + 1);  // addr
-        // Pas besoin de toucher control_stack ici
-    } else if (!currentenv->error_flag) {
+    pop(stack, *b); // index initial
+    pop(stack, *a); // limite
+    if (currentenv->return_stack.top + 3 >= STACK_SIZE) {
         set_error("DO: Return stack overflow");
         push(stack, *a);
         push(stack, *b);
+        break;
     }
+    currentenv->return_stack.top++;
+    mpz_set(currentenv->return_stack.data[currentenv->return_stack.top], *a); // limite
+    currentenv->return_stack.top++;
+    mpz_set(currentenv->return_stack.data[currentenv->return_stack.top], *b); // index
+    currentenv->return_stack.top++;
+    mpz_set_si(currentenv->return_stack.data[currentenv->return_stack.top], *ip + 1); // adresse de retour
     break;
 
 case OP_LOOP:
-    if (currentenv->return_stack.top >= 2) {
-        mpz_add_ui(currentenv->return_stack.data[currentenv->return_stack.top - 1],
-                   currentenv->return_stack.data[currentenv->return_stack.top - 1], 1);  // Incrémente index
-        if (mpz_cmp(currentenv->return_stack.data[currentenv->return_stack.top - 1],
-                    currentenv->return_stack.data[currentenv->return_stack.top - 2]) < 0) {
-            *ip = mpz_get_si(currentenv->return_stack.data[currentenv->return_stack.top]) - 1;  // Retour à addr
-        } else {
-            currentenv->return_stack.top -= 3;  // Dépile limit, index, addr
-        }
+    if (currentenv->return_stack.top < 2) {
+        set_error("LOOP: Return stack underflow");
+        break;
+    }
+    mpz_add_ui(*result, currentenv->return_stack.data[currentenv->return_stack.top - 1], 1); // index + 1
+    if (mpz_cmp(*result, currentenv->return_stack.data[currentenv->return_stack.top - 2]) < 0) { // index < limit
+        mpz_set(currentenv->return_stack.data[currentenv->return_stack.top - 1], *result);
+        *ip = instr.operand - 1; // Retour à l'instruction après DO
     } else {
-        set_error("LOOP without DO");
+        currentenv->return_stack.top -= 3; // Dépiler limit, index, addr
     }
     break;
 
 case OP_I:
-    if (currentenv->return_stack.top >= 1) {
-        char debug_msg[512];
-        // snprintf(debug_msg, sizeof(debug_msg), "I: Current index=%s", mpz_get_str(NULL, 10, currentenv->return_stack.data[currentenv->return_stack.top - 1]));
-        // send_to_channel(debug_msg);
-         push(stack, currentenv->return_stack.data[currentenv->return_stack.top - 1]);  // Commenté pour ne pas pousser
-    } else {
-        set_error("I outside loop");
+    if (currentenv->return_stack.top < 1) {
+        set_error("I: Return stack underflow");
+        break;
     }
-    break;;
+    push(stack, currentenv->return_stack.data[currentenv->return_stack.top - 1]); // Pousse l'index actuel
+    break;
 
 case OP_J:
     if (currentenv->return_stack.top >= 1) {
@@ -1673,19 +1664,27 @@ case OP_J:
         set_error("UNLOOP without DO");
     }
     break;
-        case OP_PLUS_LOOP:
-    if (currentenv->return_stack.top >= 2) {
-        pop(stack, *a);  // Incrément
-        if (!currentenv->error_flag) {
-            mpz_add(currentenv->return_stack.data[currentenv->return_stack.top - 1], currentenv->return_stack.data[currentenv->return_stack.top - 1], *a);
-            if (mpz_cmp(currentenv->return_stack.data[currentenv->return_stack.top - 1], currentenv->return_stack.data[currentenv->return_stack.top - 2]) < 0) {
-                *ip = mpz_get_si(currentenv->return_stack.data[currentenv->return_stack.top]) - 1;
-            } else {
-                currentenv->return_stack.top -= 3;
-            }
+case OP_PLUS_LOOP:
+    if (stack->top < 0 || currentenv->return_stack.top < 2) {
+        set_error("+LOOP: Stack or return stack underflow");
+        break;
+    }
+    pop(stack, *a); // Pas
+    mpz_t *index = &currentenv->return_stack.data[currentenv->return_stack.top - 1]; // Prendre l'adresse
+    mpz_t *limit = &currentenv->return_stack.data[currentenv->return_stack.top - 2]; // Prendre l'adresse
+    mpz_add(*index, *index, *a); // index += pas
+    if (mpz_sgn(*a) >= 0) {
+        if (mpz_cmp(*index, *limit) < 0) {
+            *ip = instr.operand - 1; // Retour à DO
+        } else {
+            currentenv->return_stack.top -= 3;
         }
     } else {
-        set_error("+LOOP without DO");
+        if (mpz_cmp(*index, *limit) > 0) {
+            *ip = instr.operand - 1; // Retour à DO
+        } else {
+            currentenv->return_stack.top -= 3;
+        }
     }
     break;
         case OP_SQRT:
@@ -2227,6 +2226,26 @@ case OP_IMAGE:
         push(stack, *a);
     }
     break;
+        	case OP_CLEAR_STRINGS:
+    if (strcmp(word->name, "CLEAR-STRINGS") == 0) {
+        for (int i = 0; i <= currentenv->string_stack_top; i++) {
+            if (currentenv->string_stack[i]) free(currentenv->string_stack[i]);
+        }
+        currentenv->string_stack_top = -1;
+    } else {
+        stack->top = -1;
+    }
+    break;
+	case OP_DELAY:
+    if (stack->top >= 0) {
+        mpz_t delay_ms;
+        pop(stack, delay_ms);
+        unsigned long ms = mpz_get_ui(delay_ms);
+        usleep(ms * 1000); // ms -> microsecondes
+    } else {
+        set_error("DELAY: Stack underflow");
+    }
+    break;
         default:
             set_error("Unknown opcode");
             break;
@@ -2323,22 +2342,38 @@ if (strcmp(token, ":") == 0) {
         env->compile_error = 1;
         return;
     }
-    if (findCompiledWordIndex(next_token) >= 0) {
-        set_error("Word already defined");
-        env->compile_error = 1;
-        return;
-    }
     env->compiling = 1;
-    env->currentWord.name = strdup(next_token); // Déjà strdup ici
+    int existing_idx = findCompiledWordIndex(next_token);
+    if (existing_idx >= 0) {
+        // Réutiliser l’emplacement existant
+        env->current_word_index = existing_idx;
+        // Libérer les anciennes ressources si nécessaire
+        if (env->dictionary.words[existing_idx].name) {
+            free(env->dictionary.words[existing_idx].name);
+        }
+        for (int j = 0; j < env->dictionary.words[existing_idx].string_count; j++) {
+            if (env->dictionary.words[existing_idx].strings[j]) {
+                free(env->dictionary.words[existing_idx].strings[j]);
+            }
+        }
+        env->dictionary.words[existing_idx].name = NULL; // Sécurité
+        env->dictionary.words[existing_idx].code_length = 0;
+        env->dictionary.words[existing_idx].string_count = 0;
+    } else {
+        // Nouveau mot
+        env->current_word_index = env->dictionary.count;
+        if (env->dictionary.count >= env->dictionary.capacity) {
+            resizeDynamicDictionary(&env->dictionary);
+        }
+        env->dictionary.count++; // Incrémenter uniquement si nouveau
+    }
+    env->currentWord.name = strdup(next_token);
     env->currentWord.code_length = 0;
     env->currentWord.string_count = 0;
     env->control_stack_top = 0;
-    env->current_word_index = env->dictionary.count;
-    if (env->dictionary.count >= env->dictionary.capacity) {
-        resizeDynamicDictionary(&env->dictionary);
-    }
     return;
 }
+
     // Fin d’une définition
 if (strcmp(token, ";") == 0) {
     if (!env->compiling) {
@@ -2439,9 +2474,42 @@ if (strcmp(token, ";") == 0) {
         else if (strcmp(token, "R@") == 0) instr.opcode = OP_R_FETCH;
         else if (strcmp(token, "I") == 0) instr.opcode = OP_I;
         else if (strcmp(token, "J") == 0) instr.opcode = OP_J;
-        else if (strcmp(token, "DO") == 0) instr.opcode = OP_DO;
-        else if (strcmp(token, "LOOP") == 0) instr.opcode = OP_LOOP;
-        else if (strcmp(token, "+LOOP") == 0) instr.opcode = OP_PLUS_LOOP;
+else if (strcmp(token, "DO") == 0) {
+    if (env->control_stack_top >= CONTROL_STACK_SIZE) {
+        set_error("Control stack overflow");
+        env->compile_error = 1;
+        return;
+    }
+    instr.opcode = OP_DO;
+    instr.operand = 0; // Pas utilisé directement ici
+    env->control_stack[env->control_stack_top++] = (ControlEntry){CT_DO, env->currentWord.code_length};
+    env->currentWord.code[env->currentWord.code_length++] = instr;
+    return;
+}
+else if (strcmp(token, "LOOP") == 0) {
+    if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_DO) {
+        set_error("LOOP without DO");
+        env->compile_error = 1;
+        return;
+    }
+    ControlEntry do_entry = env->control_stack[--env->control_stack_top];
+    instr.opcode = OP_LOOP;
+    instr.operand = do_entry.addr + 1; // Pointe vers l'instruction APRÈS DO
+    env->currentWord.code[env->currentWord.code_length++] = instr;
+    return;
+}
+else if (strcmp(token, "+LOOP") == 0) {
+    if (env->control_stack_top <= 0 || env->control_stack[env->control_stack_top - 1].type != CT_DO) {
+        set_error("+LOOP without DO");
+        env->compile_error = 1;
+        return;
+    }
+    ControlEntry do_entry = env->control_stack[--env->control_stack_top];
+    instr.opcode = OP_PLUS_LOOP;
+    instr.operand = do_entry.addr + 1; // Pointe vers l'instruction APRÈS DO
+    env->currentWord.code[env->currentWord.code_length++] = instr;
+    return;
+}
         else if (strcmp(token, "PICK") == 0) instr.opcode = OP_PICK;
         else if (strcmp(token, "EXIT") == 0) instr.opcode = OP_EXIT;
         else if (strcmp(token, "CLOCK") == 0) instr.opcode = OP_CLOCK;
@@ -2478,32 +2546,48 @@ if (strcmp(token, ";") == 0) {
             return;
         }
         // Gestion de VARIABLE
-        else if (strcmp(token, "VARIABLE") == 0) {
-            char *next_token = strtok_r(NULL, " \t\n", input_rest);
-            if (!next_token) {
-                set_error("VARIABLE requires a name");
-                return;
-            }
-            if (findCompiledWordIndex(next_token) >= 0) {
-                set_error("VARIABLE: Name already defined");
-                return;
-            }
-            unsigned long encoded_index = memory_create(&env->memory_list, next_token, TYPE_VAR);
-            if (encoded_index == 0) {
-                set_error("VARIABLE: Memory creation failed");
-                return;
-            }
-            if (env->dictionary.count >= env->dictionary.capacity) {
-                resizeDynamicDictionary(&env->dictionary);
-            }
-            int dict_idx = env->dictionary.count++;
-            env->dictionary.words[dict_idx].name = strdup(next_token);
-            env->dictionary.words[dict_idx].code[0].opcode = OP_PUSH;
-            env->dictionary.words[dict_idx].code[0].operand = encoded_index;
-            env->dictionary.words[dict_idx].code_length = 1;
-            env->dictionary.words[dict_idx].string_count = 0;
-            return;
+                else if (strcmp(token, "VARIABLE") == 0) {
+    char *next_token = strtok_r(NULL, " \t\n", input_rest);
+    if (!next_token) {
+        set_error("VARIABLE requires a name");
+        return;
+    }
+    int existing_idx = findCompiledWordIndex(next_token);
+    unsigned long encoded_index = memory_create(&env->memory_list, next_token, TYPE_VAR);
+    if (encoded_index == 0) {
+        set_error("VARIABLE: Memory creation failed");
+        return;
+    }
+    if (existing_idx >= 0) {
+        // Remplacer l’ancienne définition
+        if (env->dictionary.words[existing_idx].name) {
+            free(env->dictionary.words[existing_idx].name);
         }
+        for (int j = 0; j < env->dictionary.words[existing_idx].string_count; j++) {
+            if (env->dictionary.words[existing_idx].strings[j]) {
+                free(env->dictionary.words[existing_idx].strings[j]);
+            }
+        }
+        env->dictionary.words[existing_idx].name = strdup(next_token);
+        env->dictionary.words[existing_idx].code[0].opcode = OP_PUSH;
+        env->dictionary.words[existing_idx].code[0].operand = encoded_index;
+        env->dictionary.words[existing_idx].code_length = 1;
+        env->dictionary.words[existing_idx].string_count = 0;
+        env->dictionary.words[existing_idx].immediate = 0;
+    } else {
+        // Nouveau mot
+        if (env->dictionary.count >= env->dictionary.capacity) {
+            resizeDynamicDictionary(&env->dictionary);
+        }
+        int dict_idx = env->dictionary.count++;
+        env->dictionary.words[dict_idx].name = strdup(next_token);
+        env->dictionary.words[dict_idx].code[0].opcode = OP_PUSH;
+        env->dictionary.words[dict_idx].code[0].operand = encoded_index;
+        env->dictionary.words[dict_idx].code_length = 1;
+        env->dictionary.words[dict_idx].string_count = 0;
+        env->dictionary.words[dict_idx].immediate = 0;
+    }
+}
         // Gestion de "
         else if (strcmp(token, "\"") == 0) {
             char *start = *input_rest;
@@ -2779,67 +2863,112 @@ else if (strcmp(token, "ENDCASE") == 0) {
             }
             strtok_r(NULL, " \t\n", input_rest);
         }
-        else if (strcmp(token, "CREATE") == 0) {
-            char *next_token = strtok_r(NULL, " \t\n", input_rest);
-            if (!next_token) {
-                set_error("CREATE requires a name");
-                env->compile_error = 1;
-                return;
-            }
-            if (findCompiledWordIndex(next_token) >= 0) {
-                char msg[512];
-                snprintf(msg, sizeof(msg), "CREATE: '%s' already defined", next_token);
-                set_error(msg);
-                env->compile_error = 1;
-                return;
-            }
-            unsigned long index = memory_create(&env->memory_list, next_token, TYPE_VAR);
-            if (index == 0) {
-                set_error("CREATE: Memory creation failed");
-                env->compile_error = 1;
-                return;
-            }
-            if (env->dictionary.count >= env->dictionary.capacity) {
-                resizeDynamicDictionary(&env->dictionary);
-            }
-            int dict_idx = env->dictionary.count++;
-            env->dictionary.words[dict_idx].name = strdup(next_token);
-            env->dictionary.words[dict_idx].code[0].opcode = OP_PUSH;
-            env->dictionary.words[dict_idx].code[0].operand = index;
-            env->dictionary.words[dict_idx].code_length = 1;
-            env->dictionary.words[dict_idx].string_count = 0;
-            if (env->compiling) {
-                instr.opcode = OP_CREATE;
-                instr.operand = env->currentWord.string_count;
-                env->currentWord.strings[env->currentWord.string_count++] = strdup(next_token);
-                env->currentWord.code[env->currentWord.code_length++] = instr;
+               else if (strcmp(token, "CREATE") == 0) {
+    char *next_token = strtok_r(NULL, " \t\n", input_rest);
+    if (!next_token) {
+        set_error("CREATE requires a name");
+        env->compile_error = 1;
+        return;
+    }
+    int existing_idx = findCompiledWordIndex(next_token);
+    unsigned long index = memory_create(&env->memory_list, next_token, TYPE_ARRAY);
+    if (index == 0) {
+        set_error("CREATE: Memory creation failed");
+        env->compile_error = 1;
+        return;
+    }
+    if (existing_idx >= 0) {
+        // Remplacer l’ancienne définition
+        if (env->dictionary.words[existing_idx].name) {
+            free(env->dictionary.words[existing_idx].name);
+        }
+        for (int j = 0; j < env->dictionary.words[existing_idx].string_count; j++) {
+            if (env->dictionary.words[existing_idx].strings[j]) {
+                free(env->dictionary.words[existing_idx].strings[j]);
             }
         }
+        env->dictionary.words[existing_idx].name = strdup(next_token);
+        env->dictionary.words[existing_idx].code[0].opcode = OP_PUSH;
+        env->dictionary.words[existing_idx].code[0].operand = index;
+        env->dictionary.words[existing_idx].code_length = 1;
+        env->dictionary.words[existing_idx].string_count = 0;
+        env->dictionary.words[existing_idx].immediate = 0;
+        MemoryNode *node = memory_get(&env->memory_list, index);
+        if (node && node->type == TYPE_ARRAY) {
+            node->value.array.data = (mpz_t *)malloc(sizeof(mpz_t));
+            mpz_init(node->value.array.data[0]);
+            mpz_set_ui(node->value.array.data[0], 0);
+            node->value.array.size = 1;
+        }
+    } else {
+        // Nouveau mot
+        if (env->dictionary.count >= env->dictionary.capacity) {
+            resizeDynamicDictionary(&env->dictionary);
+        }
+        int dict_idx = env->dictionary.count++;
+        env->dictionary.words[dict_idx].name = strdup(next_token);
+        env->dictionary.words[dict_idx].code[0].opcode = OP_PUSH;
+        env->dictionary.words[dict_idx].code[0].operand = index;
+        env->dictionary.words[dict_idx].code_length = 1;
+        env->dictionary.words[dict_idx].string_count = 0;
+        env->dictionary.words[dict_idx].immediate = 0;
+        MemoryNode *node = memory_get(&env->memory_list, index);
+        if (node && node->type == TYPE_ARRAY) {
+            node->value.array.data = (mpz_t *)malloc(sizeof(mpz_t));
+            mpz_init(node->value.array.data[0]);
+            mpz_set_ui(node->value.array.data[0], 0);
+            node->value.array.size = 1;
+        }
+    }
+    if (env->compiling) {
+        instr.opcode = OP_CREATE;
+        instr.operand = env->currentWord.string_count;
+        env->currentWord.strings[env->currentWord.string_count++] = strdup(next_token);
+        env->currentWord.code[env->currentWord.code_length++] = instr;
+    }
+}
         else if (strcmp(token, "VARIABLE") == 0) {
-            char *next_token = strtok_r(NULL, " \t\n", input_rest);
-            if (!next_token) {
-                set_error("VARIABLE requires a name");
-                return;
-            }
-            if (findCompiledWordIndex(next_token) >= 0) {
-                set_error("VARIABLE: Name already defined");
-                return;
-            }
-            unsigned long encoded_index = memory_create(&env->memory_list, next_token, TYPE_VAR);
-            if (encoded_index == 0) {
-                set_error("VARIABLE: Memory creation failed");
-                return;
-            }
-            if (env->dictionary.count >= env->dictionary.capacity) {
-                resizeDynamicDictionary(&env->dictionary);
-            }
-            int dict_idx = env->dictionary.count++;
-            env->dictionary.words[dict_idx].name = strdup(next_token);
-            env->dictionary.words[dict_idx].code[0].opcode = OP_PUSH;
-            env->dictionary.words[dict_idx].code[0].operand = encoded_index;
-            env->dictionary.words[dict_idx].code_length = 1;
-            env->dictionary.words[dict_idx].string_count = 0;
+    char *next_token = strtok_r(NULL, " \t\n", input_rest);
+    if (!next_token) {
+        set_error("VARIABLE requires a name");
+        return;
+    }
+    int existing_idx = findCompiledWordIndex(next_token);
+    unsigned long encoded_index = memory_create(&env->memory_list, next_token, TYPE_VAR);
+    if (encoded_index == 0) {
+        set_error("VARIABLE: Memory creation failed");
+        return;
+    }
+    if (existing_idx >= 0) {
+        // Remplacer l’ancienne définition
+        if (env->dictionary.words[existing_idx].name) {
+            free(env->dictionary.words[existing_idx].name);
         }
+        for (int j = 0; j < env->dictionary.words[existing_idx].string_count; j++) {
+            if (env->dictionary.words[existing_idx].strings[j]) {
+                free(env->dictionary.words[existing_idx].strings[j]);
+            }
+        }
+        env->dictionary.words[existing_idx].name = strdup(next_token);
+        env->dictionary.words[existing_idx].code[0].opcode = OP_PUSH;
+        env->dictionary.words[existing_idx].code[0].operand = encoded_index;
+        env->dictionary.words[existing_idx].code_length = 1;
+        env->dictionary.words[existing_idx].string_count = 0;
+        env->dictionary.words[existing_idx].immediate = 0;
+    } else {
+        // Nouveau mot
+        if (env->dictionary.count >= env->dictionary.capacity) {
+            resizeDynamicDictionary(&env->dictionary);
+        }
+        int dict_idx = env->dictionary.count++;
+        env->dictionary.words[dict_idx].name = strdup(next_token);
+        env->dictionary.words[dict_idx].code[0].opcode = OP_PUSH;
+        env->dictionary.words[dict_idx].code[0].operand = encoded_index;
+        env->dictionary.words[dict_idx].code_length = 1;
+        env->dictionary.words[dict_idx].string_count = 0;
+        env->dictionary.words[dict_idx].immediate = 0;
+    }
+}
         else if (strcmp(token, ".\"") == 0) {
             char *next_token = strtok_r(NULL, "\"", input_rest);
             if (!next_token) {
